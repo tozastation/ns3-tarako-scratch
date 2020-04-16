@@ -53,17 +53,6 @@ const int RESOURCE = 5;
 
 Ptr<OutputStreamWrapper> lorawan_energy_stream;
 
-static void EnergyEfficiencyTracer(Ptr<OutputStreamWrapper>stream, Time val)
-{
-    *stream->GetStream () << Simulator::Now ().GetSeconds () << val << std::endl;
-}
-
-void
-MonitorLoRaWANEnergy(int32_t nodeId, Ptr<OutputStreamWrapper> stream)
-{
-  Config::ConnectWithoutContext("/NodeList/" + std::to_string(nodeId) + "/$ns3::DoubleProbe/Names/EnergySource/RemainingEnergy", MakeCallback(&EnergyEfficiencyTracer));
-}
-
 double convert_string_to_double(std::string value)
 {
     return stod(value);
@@ -71,36 +60,41 @@ double convert_string_to_double(std::string value)
 
 bool is_supported_garbage_type(std::string value)
 {
-    if (value == "○") {
-        return true;
-    } else {
-        return false;
-    }
+    if (value == "○") return true;
+    else return false;
 }
 
-NS_LOG_COMPONENT_DEFINE ("OnlyLoRaWANNetworkModel");
+void OnLoRaWANEnergyConsumptionChange (Ptr<OutputStreamWrapper> stream, int node_id, double oldEnergyConsumption, double newEnergyConsumption)
+{
+  cout << "node id: " << node_id << " | " << "old: " << oldEnergyConsumption << "mA" << " | " << "new: " << newEnergyConsumption << "mA" << endl;
+  *stream->GetStream () << newEnergyConsumption << endl;
+}
+
+//NS_LOG_COMPONENT_DEFINE ("OnlyLoRaWANNetworkModel");
+NS_LOG_COMPONENT_DEFINE ("LoraEnergyModelExample");
 
 int main (int argc, char *argv[])
 {
-  LogComponentEnable ("OnlyLoRaWANNetworkModel", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraChannel", LOG_LEVEL_INFO);
-  LogComponentEnable ("LoraPhy", LOG_LEVEL_ALL);
-  LogComponentEnable ("EndDeviceLoraPhy", LOG_LEVEL_ALL);
-  LogComponentEnable ("GatewayLoraPhy", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraInterferenceHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("LorawanMac", LOG_LEVEL_ALL);
-  LogComponentEnable ("EndDeviceLorawanMac", LOG_LEVEL_ALL);
-  LogComponentEnable ("ClassAEndDeviceLorawanMac", LOG_LEVEL_ALL);
-  LogComponentEnable ("GatewayLorawanMac", LOG_LEVEL_ALL);
-  LogComponentEnable ("LogicalLoraChannelHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("LogicalLoraChannel", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraPhyHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("LorawanMacHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("OneShotSenderHelper", LOG_LEVEL_ALL);
-  LogComponentEnable ("OneShotSender", LOG_LEVEL_ALL);
-  LogComponentEnable ("LorawanMacHeader", LOG_LEVEL_ALL);
-  LogComponentEnable ("LoraFrameHeader", LOG_LEVEL_ALL);
+//   LogComponentEnable ("OnlyLoRaWANNetworkModel", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LoraChannel", LOG_LEVEL_INFO);
+//   LogComponentEnable ("LoraPhy", LOG_LEVEL_ALL);
+//   LogComponentEnable ("EndDeviceLoraPhy", LOG_LEVEL_ALL);
+//   LogComponentEnable ("GatewayLoraPhy", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LoraInterferenceHelper", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LorawanMac", LOG_LEVEL_ALL);
+//   LogComponentEnable ("EndDeviceLorawanMac", LOG_LEVEL_ALL);
+//   LogComponentEnable ("ClassAEndDeviceLorawanMac", LOG_LEVEL_ALL);
+//   LogComponentEnable ("GatewayLorawanMac", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LogicalLoraChannelHelper", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LogicalLoraChannel", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LoraHelper", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LoraPhyHelper", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LorawanMacHelper", LOG_LEVEL_ALL);
+//   LogComponentEnable ("OneShotSenderHelper", LOG_LEVEL_ALL);
+//   LogComponentEnable ("OneShotSender", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LorawanMacHeader", LOG_LEVEL_ALL);
+//   LogComponentEnable ("LoraFrameHeader", LOG_LEVEL_ALL);
+  LogComponentEnable ("LoraEnergyModelExample", LOG_LEVEL_ALL);
   LogComponentEnableAll (LOG_PREFIX_FUNC);
   LogComponentEnableAll (LOG_PREFIX_NODE);
   LogComponentEnableAll (LOG_PREFIX_TIME);
@@ -130,15 +124,6 @@ int main (int argc, char *argv[])
             g_station.incombustible = is_supported_garbage_type(rec[INCOMBUSTIBLE]);
             g_station.resource = is_supported_garbage_type(rec[RESOURCE]);
  
-            // cout << "id: " << g_station.id << endl;
-            // cout << "longitude: " << fixed << g_station.longitude << endl;
-            // cout << "latitude: " << g_station.latitude << endl;
-            // cout << "burnable: " << g_station.burnable << endl;
-            // cout << "incombustible: " << g_station.incombustible << endl;
-            // cout << "resource: " << g_station.resource << endl;
-
-            // cout << endl;
-
             g_stations.push_back(g_station);
         }
     }
@@ -151,6 +136,7 @@ int main (int argc, char *argv[])
 
     // --- (BEGIN) NS3 SetUp --- //
     NS_LOG_INFO ("Creating the channel...");
+    
     Ptr<LogDistancePropagationLossModel> loss = CreateObject<LogDistancePropagationLossModel> ();
     loss->SetPathLossExponent (3.76);
     loss->SetReference (1, 7.7);
@@ -158,16 +144,19 @@ int main (int argc, char *argv[])
     Ptr<LoraChannel> channel = CreateObject<LoraChannel> (loss, delay);
     
     NS_LOG_INFO ("Setting up mobilities...");
+    
     MobilityHelper mobility;
     mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
     
     NS_LOG_INFO ("Setting up helpers...");
+    
     LoraPhyHelper phyHelper = LoraPhyHelper ();
     phyHelper.SetChannel (channel);
     LorawanMacHelper macHelper = LorawanMacHelper ();
     LoraHelper helper = LoraHelper ();
     
     NS_LOG_INFO ("Creating the end device...");
+    
     NodeContainer endDevices;
     Ptr<ListPositionAllocator> allocator = CreateObject<ListPositionAllocator> ();
     int cnt_node = 0;
@@ -185,24 +174,22 @@ int main (int argc, char *argv[])
             cnt_node++;
         }
     }
-    //allocator->Add (Vector (34.969392, 136.962864,0));
     mobility.SetPositionAllocator (allocator);
-    cout << "info: Node Numver is " << cnt_node << endl;
+    cout << "info: Node Number is " << cnt_node << endl;
     endDevices.Create (cnt_node);
-    //endDevices.Create (1);
     mobility.Install (endDevices);
-
     phyHelper.SetDeviceType (LoraPhyHelper::ED);
     macHelper.SetDeviceType (LorawanMacHelper::ED_A);
     NetDeviceContainer endDevicesNetDevices = helper.Install (phyHelper, macHelper, endDevices);
-
     for (NodeContainer::Iterator j = endDevices.Begin (); j != endDevices.End (); ++j)
     {
       Ptr<Node> node = *j;
       Ptr<LoraNetDevice> loraNetDevice = node->GetDevice (0)->GetObject<LoraNetDevice> ();
       Ptr<LoraPhy> phy = loraNetDevice->GetPhy ();
     }
+    
     NS_LOG_INFO ("Creating the gateway...");
+    
     NodeContainer gateways;
     gateways.Create (3);
     Ptr<ListPositionAllocator> gw_allocator = CreateObject<ListPositionAllocator> ();
@@ -215,11 +202,9 @@ int main (int argc, char *argv[])
     macHelper.SetDeviceType (LorawanMacHelper::GW);
     helper.Install (phyHelper, macHelper, gateways);
     macHelper.SetSpreadingFactorsUp (endDevices, gateways, channel);
-
     PeriodicSenderHelper periodicSenderHelper;
     periodicSenderHelper.SetPeriod (Seconds (5));
     periodicSenderHelper.Install (endDevices);
-
     BasicEnergySourceHelper basicSourceHelper;
     LoraRadioEnergyModelHelper radioEnergyHelper;
 
@@ -242,14 +227,14 @@ int main (int argc, char *argv[])
     fileHelper.ConfigureFile ("battery-level", FileAggregator::SPACE_SEPARATED);
     fileHelper.WriteProbe ("ns3::DoubleProbe", "/Names/EnergySource/RemainingEnergy", "Output");
 
-    std::string energy_efficiency_file = "energy_efficiency.csv";
+    string energy_efficiency_file = "energy_efficiency.csv";
     AsciiTraceHelper ascii;
     Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream(energy_efficiency_file);
-    Simulator::Schedule(Seconds(0.0), &MonitorLoRaWANEnergy, endDevices.Get(0)->GetId(), stream);
+    deviceModels.Get(0) -> TraceConnectWithoutContext("TotalEnergyConsumption", MakeBoundCallback(&OnLoRaWANEnergyConsumptionChange, stream, 5));
     /****************
     *  Simulation  *
     ****************/
-    Simulator::Stop (Seconds(1));
+    Simulator::Stop (Seconds(10));
     Simulator::Run ();
     Simulator::Destroy ();
     return 0;

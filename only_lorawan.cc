@@ -11,8 +11,6 @@
 #include "ns3/gateway-lora-phy.h"
 #include "ns3/class-a-end-device-lorawan-mac.h"
 #include "ns3/gateway-lorawan-mac.h"
-#include "ns3/one-shot-sender-helper.h"
-
 #include "ns3/simulator.h"
 //#include "ns3/log.h"
 #include "ns3/constant-position-mobility-model.h"
@@ -42,7 +40,7 @@
 #include <vector>
 #include <exception>
 #include <limits>
-#include <cstdio>
+#include <stdio.h>
 
 using namespace std;
 using namespace ns3;
@@ -85,31 +83,22 @@ void OnPacketRecieved (Ptr<const Packet> packet) {
     cout << message << endl;
 }
 
-void OnDataRateChange (uint8_t oldDr, uint8_t newDr)
-{
-  NS_LOG_DEBUG ("DR" << unsigned(oldDr) << " -> DR" << unsigned(newDr));
-}
-
-void OnTxPowerChange (double oldTxPower, double newTxPower)
-{
-  NS_LOG_DEBUG (oldTxPower << " dBm -> " << newTxPower << " dBm");
-}
-
 int main (int argc, char *argv[])
 {
-    // Logging
+    // --- Logging ---
     LogComponentEnable ("OnlyLoRaWANNetworkModel", LOG_LEVEL_ALL);
     LogComponentEnableAll (LOG_PREFIX_FUNC);
     LogComponentEnableAll (LOG_PREFIX_NODE);
     LogComponentEnableAll (LOG_PREFIX_TIME);
-  
+    
     // Set the EDs to require Data Rate control from the NS
     Config::SetDefault ("ns3::EndDeviceLorawanMac::DRControl", BooleanValue (true));
-  
-    // Read Garbage Station Map from CSV 
+
+    // ---  Read Garbage Station Map from CSV --- //
     const string csv_file = "/Users/tozastation/workspace/ns-3.30/scratch/test_copy.csv";
     vector<vector<string>> data;
     vector<GarbageStation> g_stations;
+
     try {
         Csv objCsv(csv_file);
         if (!objCsv.getCsv(data)) {
@@ -135,13 +124,12 @@ int main (int argc, char *argv[])
         cerr << ex.what() << endl;
         return 1;
     }
-
-    // End Device mobility
-    MobilityHelper mobility_ed, mobility_gw;
     
-    mobility_ed.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+    // --- Mobility ---
+    MobilityHelper mobility_gw, mobility_ed;
     mobility_gw.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
-    
+    mobility_ed.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+    // Create Garbage Station Position
     Ptr<ListPositionAllocator> allocator = CreateObject<ListPositionAllocator> ();
     int cnt_node = 0;
     
@@ -159,24 +147,24 @@ int main (int argc, char *argv[])
             cnt_node++;
         }
     }
+    // --- End Device ---
+    NodeContainer endDevices;
+    endDevices.Create(cnt_node);
+    // Install Mobility
+    mobility_ed.SetPositionAllocator (allocator);
+    mobility_ed.Install (endDevices);
 
-    // Create a simple wireless channel
-    NS_LOG_INFO ("--- initialize LoRaWAN channel ---");
+    // --- Create Channel ---
     Ptr<LogDistancePropagationLossModel> loss = CreateObject<LogDistancePropagationLossModel> ();
     loss->SetPathLossExponent (3.76);
     loss->SetReference (1, 7.7);
-    
     Ptr<UniformRandomVariable> x = CreateObject<UniformRandomVariable> ();
     x->SetAttribute ("Min", DoubleValue (0.0));
     x->SetAttribute ("Max", DoubleValue (10));
-
     Ptr<RandomPropagationLossModel> randomLoss = CreateObject<RandomPropagationLossModel> ();
     randomLoss->SetAttribute ("Variable", PointerValue (x));
-
     loss->SetNext (randomLoss);
-
     Ptr<PropagationDelayModel> delay = CreateObject<ConstantSpeedPropagationDelayModel> ();
-
     Ptr<LoraChannel> channel = CreateObject<LoraChannel> (loss, delay);
     // --- Helper ---
     // Create the LoraPhyHelper
@@ -184,85 +172,40 @@ int main (int argc, char *argv[])
     phyHelper.SetChannel (channel);
     // Create the LorawanMacHelper
     LorawanMacHelper macHelper = LorawanMacHelper ();
-    // Create the LoraHelper
     LoraHelper helper = LoraHelper ();
-    helper.EnablePacketTracking ();
+    helper.EnablePacketTracking();
+    
 
-    // --- Create GWs ---
+    // Create the LoraNetDevices of the end devices
+    phyHelper.SetDeviceType (LoraPhyHelper::ED);
+    macHelper.SetDeviceType (LorawanMacHelper::ED_A);
+    NetDeviceContainer endDevicesNetDevices = helper.Install (phyHelper, macHelper, endDevices);
+    
+    for (NodeContainer::Iterator j = endDevices.Begin (); j != endDevices.End (); ++j)
+    {
+      Ptr<Node> node = *j;
+      Ptr<LoraNetDevice> loraNetDevice = node->GetDevice (0)->GetObject<LoraNetDevice> ();
+      Ptr<LoraPhy> phy = loraNetDevice->GetPhy ();
+    }
+    // --- Gateway ---
     NodeContainer gateways;
     gateways.Create (3);
-    // Install mobility model on fixed gateway
     Ptr<ListPositionAllocator> gw_allocator = CreateObject<ListPositionAllocator> ();
     gw_allocator->Add (Vector (34.969392, 136.924615, 15.0));
     gw_allocator->Add (Vector (34.953981, 136.962864, 15.0));
     gw_allocator->Add (Vector (34.973183, 136.967018, 15.0));
+    // Install Mobility
     mobility_gw.SetPositionAllocator (gw_allocator);
     mobility_gw.Install (gateways);
-    
     phyHelper.SetDeviceType (LoraPhyHelper::GW);
     macHelper.SetDeviceType (LorawanMacHelper::GW);
-    macHelper.SetRegion(LorawanMacHelper::AS923MHz);
     helper.Install (phyHelper, macHelper, gateways);
+    macHelper.SetSpreadingFactorsUp (endDevices, gateways, channel);
 
-    // --- Create End Devices ---
-    NS_LOG_INFO("create " << cnt_node << " end devices");
-    NodeContainer endDevices;
-    endDevices.Create(cnt_node);
-    // Install mobility model on fixed nodes
-    mobility_ed.SetPositionAllocator (allocator);
-    mobility_ed.Install (endDevices);
-
-    // Create a LoraDeviceAddressGenerator
-    uint8_t nwkId = 54;
-    uint32_t nwkAddr = 1864;
-    Ptr<LoraDeviceAddressGenerator> addrGen = CreateObject<LoraDeviceAddressGenerator> (nwkId,nwkAddr);
-    // Create the LoraNetDevices of the end devices
-    phyHelper.SetDeviceType (LoraPhyHelper::ED);
-    macHelper.SetDeviceType (LorawanMacHelper::ED_A);
-    macHelper.SetAddressGenerator(addrGen);
-    macHelper.SetRegion(LorawanMacHelper::AS923MHz);
-    NetDeviceContainer endDevicesNetDevices = helper.Install (phyHelper, macHelper, endDevices);
-    
-    OneShotSenderHelper oneShotSenderHelper;
-    oneShotSenderHelper.SetSendTime (Seconds (2));
-
-    oneShotSenderHelper.Install (endDevices);
-
-    // Install applications in EDs
-    // int appPeriodSeconds = 10;
-    // PeriodicSenderHelper appHelper = PeriodicSenderHelper ();
-    // appHelper.SetPeriod (Seconds (appPeriodSeconds));
-    // appHelper.SetPacketSize (150);
-    // Ptr<RandomVariableStream> rv = CreateObjectWithAttributes<UniformRandomVariable> ("Min", DoubleValue (0), "Max", DoubleValue (10));
-    // ApplicationContainer appContainer = appHelper.Install (endDevices);
-    // macHelper.SetSpreadingFactorsUp (endDevices, gateways, channel);
-    // appContainer.Start (Seconds (0));
-    // appContainer.Stop (Seconds(1200));
-    
-    // for (int i=0; i < (int)endDevicesNetDevices.GetN(); i++) {
-    //     Ptr<LoraNetDevice> lora_net_device = endDevicesNetDevices.Get(i)->GetObject<LoraNetDevice>();
-    //     Ptr<LorawanMac> lora_mac = lora_net_device->GetMac();
-    //     Ptr<EndDeviceLorawanMac> end_device_lora_mac = lora_mac->GetDevice()->GetObject<EndDeviceLorawanMac>();
-    //     string payload = "test";
-    //     Ptr<Packet> packet = Create<Packet>((u_int8_t*) payload.c_str(), payload.length()+1);
-    //     //end_device_lora_mac->postponeTransmission(Seconds(50), packet);
-    //     Simulator::Schedule(Seconds(10), &OnMyMacRecieved, lora_net_device, packet);    
-    // }
-
-    // iterate our nodes and print their position.
-    // for(NodeContainer::Iterator j = endDevices.Begin (); j != endDevices.End (); ++j)
-    // {
-    //   Ptr<Node> object = *j;
-    //   Ptr<MobilityModel> position = object->GetObject<MobilityModel> ();
-    //   NS_ASSERT (position != 0);
-    //   Vector pos = position->GetPosition ();
-    //   std::cout << std::fixed << "x=" << pos.x << ", y=" << pos.y << ", z=" << pos.z << std::endl;
-    // }
-    
-    // --- Create LoRaWAN Energy Consumption ---
     BasicEnergySourceHelper basicSourceHelper;
     LoraRadioEnergyModelHelper radioEnergyHelper;
-    
+
+    // --- Install Energy Consumption ---
     basicSourceHelper.Set ("BasicEnergySourceInitialEnergyJ", DoubleValue (10000)); // Energy in J
     basicSourceHelper.Set ("BasicEnergySupplyVoltageV", DoubleValue (3.3));
     radioEnergyHelper.Set ("StandbyCurrentA", DoubleValue (0.0014));
@@ -270,37 +213,42 @@ int main (int argc, char *argv[])
     radioEnergyHelper.Set ("SleepCurrentA", DoubleValue (0.0000015));
     radioEnergyHelper.Set ("RxCurrentA", DoubleValue (0.0112));
     radioEnergyHelper.SetTxCurrentModel ("ns3::ConstantLoraTxCurrentModel","TxCurrent", DoubleValue (0.028));
-    
+    // install source on EDs' nodes
     EnergySourceContainer sources = basicSourceHelper.Install (endDevices);
     Names::Add ("/Names/EnergySource", sources.Get (0));
     DeviceEnergyModelContainer deviceModels = radioEnergyHelper.Install(endDevicesNetDevices, sources);
 
-    // --- Output Log ---
-    // FileHelper fileHelper;
-    // fileHelper.ConfigureFile ("battery-level", FileAggregator::SPACE_SEPARATED);
-    // fileHelper.WriteProbe ("ns3::DoubleProbe", "/Names/EnergySource/RemainingEnergy", "Output");
-    
-    string energy_efficiency_file = "energy_efficiency.csv";
-    AsciiTraceHelper ascii;
-    Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream(energy_efficiency_file);
 
-    // --- Create the NS node ---
-    NodeContainer network_server;
-    network_server.Create (1);
-    // Install the NetworkServer application on the network server
-    NetworkServerHelper network_server_helper;
-    network_server_helper.SetGateways (gateways);
-    network_server_helper.SetEndDevices (endDevices);
-    network_server_helper.EnableAdr (true);
-    network_server_helper.SetAdr ("ns3::AdrComponent");
-    ApplicationContainer ns_container = network_server_helper.Install (network_server);
-    // Install the Forwarder application on the gateways
+    Time simulationTime = Minutes (11);
+    PeriodicSenderHelper appHelper = PeriodicSenderHelper ();
+    appHelper.SetPeriod (Seconds(10));
+    appHelper.SetPacketSize (23);
+    ApplicationContainer appContainer = appHelper.Install (endDevices);
+    appContainer.Start (Seconds (0));
+    appContainer.Stop (simulationTime);
+
+    FileHelper fileHelper;
+    fileHelper.ConfigureFile ("battery-level", FileAggregator::SPACE_SEPARATED);
+    fileHelper.WriteProbe ("ns3::DoubleProbe", "/Names/EnergySource/RemainingEnergy", "Output");
+
+    
+    // --- Network Server ---
+    NodeContainer networkServers;
+    networkServers.Create (1);
+    NetworkServerHelper networkServerHelper;
+    networkServerHelper.SetGateways (gateways);
+    networkServerHelper.SetEndDevices (endDevices);
+    networkServerHelper.EnableAdr (true);
+    networkServerHelper.SetAdr ("ns3::AdrComponent");
+    ApplicationContainer nsModels = networkServerHelper.Install (networkServers);
+
     ForwarderHelper forwarderHelper;
     forwarderHelper.Install (gateways);
 
-    // --- Connect out traces ---
-    Ptr<NetworkServer> ns = ns_container.Get(0)->GetObject<NetworkServer>();
-    ns->TraceConnectWithoutContext("ReceivedPacket", MakeCallback(&OnPacketRecieved));
+    // Trace
+    string energy_efficiency_file = "energy_efficiency.csv";
+    AsciiTraceHelper ascii;
+    Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream(energy_efficiency_file);
 
     vector<NodeInfo> node_infos(cnt_node);
     for (int i=0; i < (int)deviceModels.GetN(); i++) {
@@ -311,13 +259,11 @@ int main (int argc, char *argv[])
         );
     }
 
-    Config::ConnectWithoutContext ("/NodeList/*/DeviceList/0/$ns3::LoraNetDevice/Mac/$ns3::EndDeviceLorawanMac/TxPower", MakeCallback (&OnTxPowerChange));
-    Config::ConnectWithoutContext ("/NodeList/*/DeviceList/0/$ns3::LoraNetDevice/Mac/$ns3::EndDeviceLorawanMac/DataRate", MakeCallback (&OnDataRateChange));
-
+    Ptr<NetworkServer> ns = nsModels.Get(0)->GetObject<NetworkServer>();
+    ns->TraceConnectWithoutContext("ReceivedPacket", MakeCallback(&OnPacketRecieved));
     /****************
     *  Simulation  *
     ****************/
-    Time simulationTime = Minutes (11);
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();

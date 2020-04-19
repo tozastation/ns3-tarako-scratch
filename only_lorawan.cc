@@ -73,14 +73,26 @@ void OnLoRaWANEnergyConsumptionChange (Ptr<OutputStreamWrapper> stream, int node
 {
   ostringstream oss;
   node->energy_consumption = newEnergyConsumption;
-  cout <<std::fixed << "node id: " << node_id << " | " << "new: " << newEnergyConsumption << "mA" << endl;
+  // cout <<std::fixed << "node id: " << node_id << " | " << "new: " << newEnergyConsumption << "mA" << endl;
 }
 
-void OnPacketRecieved (Ptr<const Packet> packet) {
+void OnPacketRecieved (vector<NodeInfo>* node_infos, Ptr<const Packet> packet) {
     uint8_t *buffer = new uint8_t[packet->GetSize ()];
     packet->CopyData (buffer, packet->GetSize ());
     string message ((char *)buffer);
-    cout << message << endl;
+    int index = packet->GetUid();
+    node_infos->at(index-1).recieved_packets.push_back(packet->Copy());
+    cout << "packet from: " << packet->GetUid() << " -> " << message << endl;
+}
+
+void OnActivate (Ptr<LoraNetDevice> device, Ptr<Packet> packet) 
+{
+    uint8_t *buffer = new uint8_t[packet->GetSize ()];
+    packet->CopyData (buffer, packet->GetSize ());
+    string message ((char *)buffer);
+    cout << "packet by: " << device->GetNode()->GetId() << " -> " << message << endl;
+    device->Send(packet);
+    Simulator::Schedule(Seconds(10), &OnActivate, device, packet);
 }
 
 int main (int argc, char *argv[])
@@ -220,18 +232,10 @@ int main (int argc, char *argv[])
 
 
     Time simulationTime = Minutes (11);
-    PeriodicSenderHelper appHelper = PeriodicSenderHelper ();
-    appHelper.SetPeriod (Seconds(10));
-    appHelper.SetPacketSize (23);
-    ApplicationContainer appContainer = appHelper.Install (endDevices);
-    appContainer.Start (Seconds (0));
-    appContainer.Stop (simulationTime);
-
     FileHelper fileHelper;
     fileHelper.ConfigureFile ("battery-level", FileAggregator::SPACE_SEPARATED);
     fileHelper.WriteProbe ("ns3::DoubleProbe", "/Names/EnergySource/RemainingEnergy", "Output");
 
-    
     // --- Network Server ---
     NodeContainer networkServers;
     networkServers.Create (1);
@@ -245,11 +249,11 @@ int main (int argc, char *argv[])
     ForwarderHelper forwarderHelper;
     forwarderHelper.Install (gateways);
 
-    // Trace
+    // --- Connect out traces ---
     string energy_efficiency_file = "energy_efficiency.csv";
     AsciiTraceHelper ascii;
     Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream(energy_efficiency_file);
-
+    // Energy Consumption
     vector<NodeInfo> node_infos(cnt_node);
     for (int i=0; i < (int)deviceModels.GetN(); i++) {
         node_infos[i].id = std::to_string(i);
@@ -258,9 +262,18 @@ int main (int argc, char *argv[])
             MakeBoundCallback(&OnLoRaWANEnergyConsumptionChange, stream, i, &node_infos[i])
         );
     }
-
+    // Packet 
     Ptr<NetworkServer> ns = nsModels.Get(0)->GetObject<NetworkServer>();
-    ns->TraceConnectWithoutContext("ReceivedPacket", MakeCallback(&OnPacketRecieved));
+    ns->TraceConnectWithoutContext("ReceivedPacket", MakeBoundCallback(&OnPacketRecieved, &node_infos));
+    // Send Packet
+    for (int i=0; i < (int)endDevicesNetDevices.GetN(); i++) {
+        Ptr<LoraNetDevice> lora_net_device = endDevicesNetDevices.Get(i)->GetObject<LoraNetDevice>();
+        Ptr<LorawanMac> lorawan_mac = lora_net_device->GetMac();
+        string msg = "B";
+        Ptr<Packet> packet = Create<Packet>((uint8_t*) msg.c_str(), msg.length()+1);
+        Simulator::Schedule(Seconds(10), &OnActivate, lora_net_device, packet);
+    }
+
     /****************
     *  Simulation  *
     ****************/
@@ -270,6 +283,8 @@ int main (int argc, char *argv[])
 
     for (const auto& info: node_infos) {
         *stream->GetStream () << info.id << "," << info.energy_consumption << endl;
+        cout << "node id: " << info.id << ", " << "energy_consumption: " << info.energy_consumption << ", " << "packet num: " << info.recieved_packets.size() << endl;
     }
+
     return 0;
 }

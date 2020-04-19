@@ -73,26 +73,33 @@ void OnLoRaWANEnergyConsumptionChange (Ptr<OutputStreamWrapper> stream, int node
 {
   ostringstream oss;
   node->energy_consumption = newEnergyConsumption;
-  // cout <<std::fixed << "node id: " << node_id << " | " << "new: " << newEnergyConsumption << "mA" << endl;
 }
 
-void OnPacketRecieved (vector<NodeInfo>* node_infos, Ptr<const Packet> packet) {
+void OnPacketRecieved (Ptr<NetworkServer> ns, vector<NodeInfo>* node_infos, Ptr<const Packet> packet) {
     uint8_t *buffer = new uint8_t[packet->GetSize ()];
     packet->CopyData (buffer, packet->GetSize ());
     string message ((char *)buffer);
-    int index = packet->GetUid();
-    node_infos->at(index-1).recieved_packets.push_back(packet->Copy());
-    cout << "packet from: " << packet->GetUid() << " -> " << message << endl;
+    cout << message.c_str() << endl;
+    // int index = packet->;
+    // node_infos->at(node_id).recieved_packets.push_back(packet->Copy());
+    // cout << packet->ToString() << endl;
+    // cout << "packet from: " << node_id << " -> " << message << endl;
+    Ptr<EndDeviceStatus> end_device_status = ns->GetNetworkStatus()->GetEndDeviceStatus(packet);
+    LoraFrameHeader lora_frame_header = end_device_status->GetReplyFrameHeader();
+    cout << lora_frame_header.GetAddress().GetNwkAddr() << endl;
+
 }
 
-void OnActivate (Ptr<LoraNetDevice> device, Ptr<Packet> packet) 
+void OnActivate (Ptr<LoraNetDevice> device) 
 {
-    uint8_t *buffer = new uint8_t[packet->GetSize ()];
-    packet->CopyData (buffer, packet->GetSize ());
-    string message ((char *)buffer);
-    cout << "packet by: " << device->GetNode()->GetId() << " -> " << message << endl;
-    device->Send(packet);
-    Simulator::Schedule(Seconds(10), &OnActivate, device, packet);
+    // uint8_t *buffer = new uint8_t[packet->GetSize ()];
+    // packet->CopyData (buffer, packet->GetSize ());
+    // string message ((char *)buffer);
+    string msg = "ryou";
+    cout << "packet by: " << device->GetNode()->GetId() << " -> " << msg << endl;
+    Ptr<Packet> new_packet = Create<Packet>((uint8_t*) msg.c_str(), msg.length());
+    device->Send(new_packet);
+    Simulator::Schedule(Seconds(10), &OnActivate, device);
 }
 
 int main (int argc, char *argv[])
@@ -105,6 +112,7 @@ int main (int argc, char *argv[])
     
     // Set the EDs to require Data Rate control from the NS
     Config::SetDefault ("ns3::EndDeviceLorawanMac::DRControl", BooleanValue (true));
+    PacketMetadata::Enable();
 
     // ---  Read Garbage Station Map from CSV --- //
     const string csv_file = "/Users/tozastation/workspace/ns-3.30/scratch/test_copy.csv";
@@ -230,8 +238,6 @@ int main (int argc, char *argv[])
     Names::Add ("/Names/EnergySource", sources.Get (0));
     DeviceEnergyModelContainer deviceModels = radioEnergyHelper.Install(endDevicesNetDevices, sources);
 
-
-    Time simulationTime = Minutes (11);
     FileHelper fileHelper;
     fileHelper.ConfigureFile ("battery-level", FileAggregator::SPACE_SEPARATED);
     fileHelper.WriteProbe ("ns3::DoubleProbe", "/Names/EnergySource/RemainingEnergy", "Output");
@@ -264,19 +270,20 @@ int main (int argc, char *argv[])
     }
     // Packet 
     Ptr<NetworkServer> ns = nsModels.Get(0)->GetObject<NetworkServer>();
-    ns->TraceConnectWithoutContext("ReceivedPacket", MakeBoundCallback(&OnPacketRecieved, &node_infos));
+    ns->TraceConnectWithoutContext("ReceivedPacket", MakeBoundCallback(&OnPacketRecieved, ns, &node_infos));
     // Send Packet
     for (int i=0; i < (int)endDevicesNetDevices.GetN(); i++) {
         Ptr<LoraNetDevice> lora_net_device = endDevicesNetDevices.Get(i)->GetObject<LoraNetDevice>();
         Ptr<LorawanMac> lorawan_mac = lora_net_device->GetMac();
-        string msg = "B";
-        Ptr<Packet> packet = Create<Packet>((uint8_t*) msg.c_str(), msg.length()+1);
-        Simulator::Schedule(Seconds(10), &OnActivate, lora_net_device, packet);
+        // lora_net_device->GetPhy()->TraceConnectWithoutContext("ReceivedPacket", MakeBoundCallback(&OnPacketRecieved, &node_infos, i));
+        // lora_net_device->GetChannel()->TraceConnectWithoutContext("PacketSent", MakeBoundCallback(&OnPacketRecieved, &node_infos, i));
+        Simulator::Schedule(Seconds(10), &OnActivate, lora_net_device);
     }
 
     /****************
     *  Simulation  *
     ****************/
+    Time simulationTime = Minutes (11);
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();
@@ -285,6 +292,9 @@ int main (int argc, char *argv[])
         *stream->GetStream () << info.id << "," << info.energy_consumption << endl;
         cout << "node id: " << info.id << ", " << "energy_consumption: " << info.energy_consumption << ", " << "packet num: " << info.recieved_packets.size() << endl;
     }
+
+    LoraPacketTracker &tracker = helper.GetPacketTracker ();
+    std::cout << tracker.CountMacPacketsGlobally (Seconds (0), simulationTime + Minutes (1)) << std::endl;
 
     return 0;
 }

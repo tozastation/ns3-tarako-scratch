@@ -42,6 +42,7 @@
 #include <limits>
 #include <stdio.h>
 #include <unordered_map> 
+#include <random>
 
 using namespace std;
 using namespace ns3;
@@ -55,8 +56,55 @@ const int LATITUDE = 2;
 const int BURNABLE = 3;
 const int INCOMBUSTIBLE = 4;
 const int RESOURCE = 5;
-
+// Simulation Parameter
 const ns3::Time INTERVAL = Minutes(10);
+const unsigned int GARBAGE_BOX_VOLUME = 70; // UNIT: L
+
+enum GarbageBoxCondition: unsigned int
+{
+    EMPTY = 0, 
+    FILLED = 1, 
+    FULL = 2
+};
+// Garbage Helper
+struct OnlyLoRaWANPayload 
+{
+    GarbageBoxCondition c;
+};
+
+struct GarbageSensor
+{
+    unsigned int current_volume;
+};
+
+GarbageBoxCondition 
+JudgeGarbageBoxCondition(GarbageSensor* gs, unsigned int inc)
+{
+    if (gs->current_volume == 0) 
+    {
+        gs->current_volume = gs->current_volume + inc;
+        return GarbageBoxCondition::EMPTY;
+    }
+    else if (0 < gs->current_volume && gs->current_volume < GARBAGE_BOX_VOLUME) 
+    {
+        gs->current_volume = gs->current_volume + inc;
+        return GarbageBoxCondition::FILLED;
+    } 
+    else
+    {
+        gs->current_volume = 0;
+        return GarbageBoxCondition::FULL;
+    } 
+}
+
+unsigned int 
+CreaterRandomValue()
+{
+  std::random_device rd;
+  std::mt19937 mt(rd());
+  std::uniform_real_distribution<unsigned int> engine(1, 5);
+  return engine(mt);
+}
 
 NS_LOG_COMPONENT_DEFINE ("OnlyLoRaWANNetworkModel");
 
@@ -88,17 +136,20 @@ void OnPacketRecieved (unordered_map<int, NodeInfo>* node_map, Ptr<Packet const>
     // Print Payload from Recieved Packet
     uint8_t *buffer = new uint8_t[myPacket->GetSize()];
     myPacket->CopyData(buffer, myPacket->GetSize());
-    string s = string(buffer, buffer + myPacket->GetSize());
-    std::cout << "Received: " << s << std::endl;
+    OnlyLoRaWANPayload payload;
+    memcpy(&payload, buffer, sizeof(payload));
+    std::cout << "Received: " << payload.c << std::endl;
     delete buffer;
 }
 
-void OnActivate (Ptr<LoraNetDevice> device) 
+void OnActivate (Ptr<LoraNetDevice> device, GarbageSensor* gs) 
 {
-    string msg = "ryou";
-    Ptr<Packet> new_packet = Create<Packet>((uint8_t*) msg.c_str(), msg.length());
+    unsigned int random_value = CreaterRandomValue();
+    GarbageBoxCondition condition =  JudgeGarbageBoxCondition(gs, random_value);
+    OnlyLoRaWANPayload payload = OnlyLoRaWANPayload{condition};
+    Ptr<Packet> new_packet = Create<Packet>((uint8_t *)&payload, sizeof(payload));
     device->Send(new_packet);
-    Simulator::Schedule(INTERVAL, &OnActivate, device);
+    Simulator::Schedule(INTERVAL, &OnActivate, device, gs);
 }
 
 void OnMacAttached(Ptr<LorawanMac> mac)
@@ -270,6 +321,8 @@ int main (int argc, char *argv[])
     Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream(energy_consumption_file);
     // Recieved Packet 
     unordered_map<int, NodeInfo> node_map;
+    unordered_map<int, GarbageSensor> garbage_sensor_map;
+
     Ptr<NetworkServer> ns = nsModels.Get(0)->GetObject<NetworkServer>();
     ns->TraceConnectWithoutContext("ReceivedPacket", MakeBoundCallback(&OnPacketRecieved, &node_map));
     // Energy Consumption & Schedule Sending Packet
@@ -277,6 +330,7 @@ int main (int argc, char *argv[])
         Ptr<LoraNetDevice> lora_net_device = endDevicesNetDevices.Get(i)->GetObject<LoraNetDevice>();
         uint32_t nwk_addr = lora_net_device->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
         
+        // init node info
         NodeInfo node_info;
         node_info.id = i;
         node_map[int(nwk_addr)] = node_info;
@@ -284,9 +338,14 @@ int main (int argc, char *argv[])
             "TotalEnergyConsumption", 
             MakeBoundCallback(&OnLoRaWANEnergyConsumptionChange, stream, i, &node_map.at(int(nwk_addr)))
         );
+        // init garbage sensor
+        GarbageSensor garbage_sensor;
+        garbage_sensor.current_volume = 0;
+        garbage_sensor_map[int(nwk_addr)] = garbage_sensor;
+
         ns3::Time activate_time = Seconds(60*i+1);
         cout << "scheduled device: " << i << ", activate on: " << activate_time.GetSeconds() << endl;
-        Simulator::Schedule(activate_time, &OnActivate, lora_net_device);
+        Simulator::Schedule(activate_time, &OnActivate, lora_net_device, &garbage_sensor_map.at(int(nwk_addr)));
     }
     // --- Simulation ---
     Time simulationTime = Hours(24);

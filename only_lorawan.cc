@@ -101,10 +101,10 @@ JudgeGarbageBoxCondition(GarbageSensor* gs, unsigned int inc)
 unsigned int 
 CreaterRandomValue()
 {
-  std::random_device rd;
-  std::mt19937 mt(rd());
-  std::uniform_real_distribution<unsigned int> engine(1, 5);
-  return engine(mt);
+    std::random_device rd;
+	std::mt19937 mt(rd());
+	std::uniform_int_distribution<int> dice(1,5);
+    return dice(mt);
 }
 
 NS_LOG_COMPONENT_DEFINE ("OnlyLoRaWANNetworkModel");

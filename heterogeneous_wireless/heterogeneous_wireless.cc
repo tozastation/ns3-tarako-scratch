@@ -53,7 +53,7 @@ MobilityHelper mobility_gw, mobility_ed;
 Ptr<ListPositionAllocator> ed_allocator = CreateObject<ListPositionAllocator> ();
 Ptr<ListPositionAllocator> gw_allocator = CreateObject<ListPositionAllocator> ();
 NodeContainer end_devices, gateways, network_servers;
-ApplicationContainer lora_network_app;
+ApplicationContainer lora_network_apps;
 Ptr<LogDistancePropagationLossModel> loss = CreateObject<LogDistancePropagationLossModel> ();
 Ptr<UniformRandomVariable> x = CreateObject<UniformRandomVariable> ();
 Ptr<RandomPropagationLossModel> randomLoss = CreateObject<RandomPropagationLossModel> ();
@@ -74,21 +74,20 @@ const int LORAWAN_NETWORK_SERVER_NUM = 1;
 int cnt_node = 0;
 std::unordered_map<int, tarako::NodeInfo> trace_node_map;
 std::unordered_map<int, tarako::GarbageBoxSensor> trace_garbage_box_sensor_map;
-NS_LOG_COMPONENT_DEFINE ("OnlyLoRaWANNetworkModel");
+NS_LOG_COMPONENT_DEFINE ("HeterogeneousWirelessNetworkModel");
 
 int main (int argc, char *argv[])
 {
     // --- Logging --- //
-//     LogComponentEnable ("OnlyLoRaWANNetworkModel", LOG_LEVEL_ALL);
-//     LogComponentEnable ("AdrComponent", LOG_LEVEL_ALL);
-//     LogComponentEnable ("EndDeviceLorawanMac", LOG_LEVEL_ALL);
-//     LogComponentEnable ("LoraPacketTracker", LOG_LEVEL_ALL);
-//     LogComponentEnable("GatewayLorawanMac", LOG_LEVEL_ALL);
-//     LogComponentEnable("NetworkServer", LOG_LEVEL_ALL);
-//     LogComponentEnableAll (LOG_PREFIX_FUNC);
-//     LogComponentEnableAll (LOG_PREFIX_NODE);
-//     LogComponentEnableAll (LOG_PREFIX_TIME);
-    
+    LogComponentEnable ("HeterogeneousWirelessNetworkModel", LOG_LEVEL_ALL);
+    // LogComponentEnable ("AdrComponent", LOG_LEVEL_ALL);
+    // LogComponentEnable ("EndDeviceLorawanMac", LOG_LEVEL_ALL);
+    // LogComponentEnable ("LoraPacketTracker", LOG_LEVEL_ALL);
+    // LogComponentEnable("GatewayLorawanMac", LOG_LEVEL_ALL);
+    // LogComponentEnable("NetworkServer", LOG_LEVEL_ALL);
+    LogComponentEnableAll (LOG_PREFIX_FUNC);
+    LogComponentEnableAll (LOG_PREFIX_NODE);
+    LogComponentEnableAll (LOG_PREFIX_TIME);
     // --- Set the EDs to require Data Rate control from the NS --- //
     Config::SetDefault ("ns3::EndDeviceLorawanMac::DRControl", BooleanValue (true));
     PacketMetadata::Enable();
@@ -145,7 +144,7 @@ int main (int argc, char *argv[])
     lora_phy_helper.SetDeviceType (LoraPhyHelper::ED);
     lora_mac_helper.SetDeviceType (LorawanMacHelper::ED_A);
     lora_mac_helper.SetAddressGenerator (addr_gen);
-    lora_mac_helper.SetRegion (LorawanMacHelper::AS923MHz);
+    lora_mac_helper.SetRegion (LorawanMacHelper::EU);
     NetDeviceContainer ed_net_devices = lora_helper.Install (lora_phy_helper, lora_mac_helper, end_devices);
     // --- Install Helper to Gateway --- //
     lora_phy_helper.SetDeviceType (LoraPhyHelper::GW);
@@ -170,12 +169,13 @@ int main (int argc, char *argv[])
     network_server_helper.SetEndDevices (end_devices);
     network_server_helper.EnableAdr (true);
     network_server_helper.SetAdr ("ns3::AdrComponent");
-    lora_network_app = network_server_helper.Install (network_servers);
+    lora_network_apps = network_server_helper.Install (network_servers);
     // Connect Gateway 
     forwarderHelper.Install (gateways);
 
     // [INFO] Trace
-    Ptr<NetworkServer> ns = network_servers.Get(0)->GetObject<NetworkServer>();
+    NS_LOG_INFO("[TRACE] tarako::OnPacketRecievedAtNetworkServer");
+    Ptr<NetworkServer> ns = lora_network_apps.Get(0)->GetObject<NetworkServer>();
     ns->TraceConnectWithoutContext(
         "ReceivedPacket", 
         MakeBoundCallback(&tarako::OnPacketRecievedAtNetworkServer, &trace_node_map)
@@ -188,8 +188,10 @@ int main (int argc, char *argv[])
         tarako::NodeInfo node_info;
         node_info.id = i;
         int lora_net_addr = int(nwk_addr);
+        NS_LOG_INFO("[INFO] LoRaWAN Network Address: " << lora_net_addr);
         trace_node_map[lora_net_addr] = node_info;
         // [TRACE] Energy Consumption
+        NS_LOG_INFO("[TRACE] tarako::OnLoRaWANEnergyConsumptionChange");
         device_energy_models.Get(i) -> TraceConnectWithoutContext(
             "TotalEnergyConsumption", 
             MakeBoundCallback(&tarako::OnLoRaWANEnergyConsumptionChange, &trace_node_map.at(lora_net_addr))
@@ -199,6 +201,7 @@ int main (int argc, char *argv[])
         garbage_box_sensor.current_volume = 0;
         trace_garbage_box_sensor_map[lora_net_addr] = garbage_box_sensor;
         // [Schedule] send packet
+        NS_LOG_INFO("[TRACE] tarako::OnActivateNode");
         ns3::Time activate_time = Seconds(60*i+1);
         Simulator::Schedule(
             activate_time, 
@@ -214,7 +217,9 @@ int main (int argc, char *argv[])
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();
-//     // --- Write Log ---
+    // --- Write Log ---
+    const std::string log_path = "./scratch/heterogeneous_wireless/"; 
+    tarako_logger.WriteLog(trace_node_map, log_path);
 //     WriteLog(node_map);
 //     LoraPacketTracker &tracker = helper.GetPacketTracker ();
 //     std::cout << tracker.CountMacPacketsGlobally (Seconds (0), simulationTime + Minutes (1)) << std::endl;

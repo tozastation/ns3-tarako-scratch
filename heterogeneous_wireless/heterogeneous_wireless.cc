@@ -78,6 +78,7 @@ const int LORAWAN_GATEWAY_NUM = 3;
 const int LORAWAN_NETWORK_SERVER_NUM = 1;
 // --- Global Variable --- //
 int cnt_node = 0;
+std::vector<std::vector<int>> available_connections;
 std::vector<tarako::TarakoNodeData> tarako_nodes;
 std::unordered_map<int, tarako::TarakoNodeData> trace_node_data_map;
 std::unordered_map<int, tarako::GarbageBoxSensor> trace_garbage_box_sensor_map;
@@ -102,7 +103,9 @@ int main (int argc, char *argv[])
     // [CSV READ] Garbage Box //
     const auto garbage_boxes = tarako::TarakoUtil::GetGarbageBox(GARBAGE_BOX_MAP_FILE);  
     // [ADD] garbage boxes geolocation in allocator 
+    
     for (const auto& g_box: garbage_boxes) {
+        std::vector<int> available_connection;
         if (g_box.burnable) {
             ns3::Vector3D pos = Vector (g_box.latitude, g_box.longitude,1);
             ed_allocator->Add (pos);
@@ -112,6 +115,7 @@ int main (int argc, char *argv[])
             node.id = cnt_node;
             node.position = pos;
             tarako_nodes.push_back(node);
+            available_connection.push_back(cnt_node-1);
         }
         if (g_box.incombustible) {
             ns3::Vector3D pos = Vector (g_box.latitude + 0.000001, g_box.longitude,1);
@@ -122,6 +126,7 @@ int main (int argc, char *argv[])
             node.id = cnt_node;
             node.position = pos;
             tarako_nodes.push_back(node);
+            available_connection.push_back(cnt_node-1);
         }
         if (g_box.resource) {
             ns3::Vector3D pos = Vector (g_box.latitude + 0.000002, g_box.longitude,1);
@@ -132,7 +137,9 @@ int main (int argc, char *argv[])
             node.id = cnt_node;
             node.position = pos;
             tarako_nodes.push_back(node);
+            available_connection.push_back(cnt_node-1);
         }
+        available_connections.push_back(available_connection);
     }
     // [INIT] End Devices (LoRaWAN, BLE)
     end_devices.Create(cnt_node);
@@ -237,6 +244,41 @@ int main (int argc, char *argv[])
         node_data.ble_net_device = ble_net_devices.Get(i)->GetObject<BleNetDevice>();
         node_data.lora_net_device = ed_net_devices.Get(i)->GetObject<LoraNetDevice>();
         node_data.lora_network_addr = node_data.lora_net_device->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+        
+        bool is_multiple_node = false;
+        int target_index = 0;
+        for (auto& conn: available_connections)
+        {
+            for (auto& node_id: conn)
+            {
+                if (node_id == i)
+                {
+                    is_multiple_node = true;
+                    break;
+                }
+            }
+            if(is_multiple_node) break;
+            target_index++;
+        }
+
+        if (is_multiple_node) 
+        {
+            NS_LOG_INFO("checkpoint: (available_connections) size -> " << available_connections.size());
+            NS_LOG_INFO("checkpoint: (target index) -> " << target_index);
+            auto conn = available_connections.at(target_index);
+            std::cout << "checkpoint" << std::endl;
+            for (auto& node_id: conn)
+            {
+                if (node_id != i)
+                {
+                    std::cout << "found" << std::endl;
+                    auto lora_nd = ed_net_devices.Get(node_id)->GetObject<LoraNetDevice>();
+                    auto ble_net_addr = tarako_nodes[node_id].ble_network_addr;
+                    auto lora_net_addr = lora_nd->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+                    node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
+                }
+            }
+        }
         // add node_data to hash map
         trace_node_data_map[node_data.lora_network_addr] = node_data;
         // init garbage sensor

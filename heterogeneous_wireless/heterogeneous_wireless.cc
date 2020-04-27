@@ -78,12 +78,24 @@ const int LORAWAN_GATEWAY_NUM = 3;
 const int LORAWAN_NETWORK_SERVER_NUM = 1;
 // --- Global Variable --- //
 int cnt_node = 0;
-std::vector<std::vector<int>> available_connections;
+std::vector<std::vector<std::tuple<int, bool>>> available_connections;
 std::vector<tarako::TarakoNodeData> tarako_nodes;
 std::unordered_map<int, tarako::TarakoNodeData> trace_node_data_map;
 std::unordered_map<int, tarako::GarbageBoxSensor> trace_garbage_box_sensor_map;
 
 NS_LOG_COMPONENT_DEFINE ("HeterogeneousWirelessNetworkModel");
+
+// Prepare Implement
+void OnBleReceived(Ptr<const Packet> packet)
+{
+    // Ptr<Packet> myPacket = packet->Copy ();
+    // uint8_t *buffer = new uint8_t[myPacket->GetSize()];
+    // myPacket->CopyData(buffer, myPacket->GetSize());
+    // tarako::TarakoGroupMemberPayload payload;
+    // memcpy(&payload, buffer, sizeof(payload));
+    // std::cout << payload.status << std::endl;
+    std::cout << "received" << std::endl;
+}
 
 int main (int argc, char *argv[])
 {
@@ -94,6 +106,10 @@ int main (int argc, char *argv[])
     // LogComponentEnable ("LoraPacketTracker", LOG_LEVEL_ALL);
     // LogComponentEnable("GatewayLorawanMac", LOG_LEVEL_ALL);
     // LogComponentEnable("NetworkServer", LOG_LEVEL_ALL);
+    // LogComponentEnable("BlePhy", LOG_LEVEL_ALL);
+    // LogComponentEnable("BleLinkController", LOG_LEVEL_ALL);
+    // LogComponentEnable("BleNetDevice", LOG_LEVEL_ALL);
+    LogComponentEnable("BleLinkManager", LOG_LEVEL_ALL);
     LogComponentEnableAll (LOG_PREFIX_FUNC);
     LogComponentEnableAll (LOG_PREFIX_NODE);
     LogComponentEnableAll (LOG_PREFIX_TIME);
@@ -105,7 +121,7 @@ int main (int argc, char *argv[])
     // [ADD] garbage boxes geolocation in allocator 
     
     for (const auto& g_box: garbage_boxes) {
-        std::vector<int> available_connection;
+        std::vector<std::tuple<int, bool>> available_connection;
         if (g_box.burnable) {
             ns3::Vector3D pos = Vector (g_box.latitude, g_box.longitude,1);
             ed_allocator->Add (pos);
@@ -115,7 +131,7 @@ int main (int argc, char *argv[])
             node.id = cnt_node;
             node.position = pos;
             tarako_nodes.push_back(node);
-            available_connection.push_back(cnt_node-1);
+            available_connection.push_back({cnt_node-1, false});
         }
         if (g_box.incombustible) {
             ns3::Vector3D pos = Vector (g_box.latitude + 0.000001, g_box.longitude,1);
@@ -126,7 +142,7 @@ int main (int argc, char *argv[])
             node.id = cnt_node;
             node.position = pos;
             tarako_nodes.push_back(node);
-            available_connection.push_back(cnt_node-1);
+            available_connection.push_back({cnt_node-1, false});
         }
         if (g_box.resource) {
             ns3::Vector3D pos = Vector (g_box.latitude + 0.000002, g_box.longitude,1);
@@ -137,8 +153,13 @@ int main (int argc, char *argv[])
             node.id = cnt_node;
             node.position = pos;
             tarako_nodes.push_back(node);
-            available_connection.push_back(cnt_node-1);
+            available_connection.push_back({cnt_node-1, false});
         }
+        // select leader node
+        int available_cnt = available_connection.size();
+        int leader_node = tarako::TarakoUtil::CreateRandomInt(0, available_cnt-1);
+        std::get<1>(available_connection.at(leader_node)) = true;
+        // add connection
         available_connections.push_back(available_connection);
     }
     // [INIT] End Devices (LoRaWAN, BLE)
@@ -224,8 +245,8 @@ int main (int argc, char *argv[])
       NS_LOG_INFO ("address = " << DynamicCast<BleNetDevice>(ble_net_devices.Get(i))->GetAddress ());
     }
     // Create Links between The Nodes  
-    const bool LINK_SCHEDULED = true; // Schedule the TX windows instead of random parameters.
-    const uint32_t NB_CONN_INTERVAL = 3200; 
+    const bool LINK_SCHEDULED = false; // Schedule the TX windows instead of random parameters.
+    const uint32_t NB_CONN_INTERVAL = 0; 
     // [MAX 3200]  nbConnInterval*1,25ms = size of connection interval. 
     // if nbConnInterval = 0, each link will get a random conn interval
     ble_helper.CreateAllLinks(ble_net_devices, LINK_SCHEDULED, NB_CONN_INTERVAL);
@@ -234,9 +255,8 @@ int main (int argc, char *argv[])
     for (int i=0; i < (int)ed_net_devices.GetN(); i++) {
         // init object
         tarako::TarakoNodeData node_data = tarako_nodes[i];
-        ns3::Time activate_time = Seconds(60*i+1);
+        ns3::Time activate_time = Seconds(10);
         node_data.conn_interval = activate_time;
-        node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
         node_data.total_energy_consumption = 0;
         node_data.lora_energy_consumption = 0;
         node_data.ble_energy_consumption = 0;
@@ -249,8 +269,9 @@ int main (int argc, char *argv[])
         int target_index = 0;
         for (auto& conn: available_connections)
         {
-            for (auto& node_id: conn)
+            for (auto& conn_info: conn)
             {
+                int node_id = std::get<0>(conn_info);
                 if (node_id == i)
                 {
                     is_multiple_node = true;
@@ -260,22 +281,37 @@ int main (int argc, char *argv[])
             if(is_multiple_node) break;
             target_index++;
         }
-
         if (is_multiple_node) 
         {
             NS_LOG_INFO("checkpoint: (available_connections) size -> " << available_connections.size());
             NS_LOG_INFO("checkpoint: (target index) -> " << target_index);
             auto conn = available_connections.at(target_index);
-            std::cout << "checkpoint" << std::endl;
-            for (auto& node_id: conn)
+            for (auto& conn_info: conn)
             {
+                int node_id = std::get<0>(conn_info);
+                bool this_is_leader = std::get<1>(conn_info);
+                if (this_is_leader)
+                {
+                    node_data.leader_node_addr = tarako_nodes[node_id].ble_network_addr;
+                }
                 if (node_id != i)
                 {
-                    std::cout << "found" << std::endl;
                     auto lora_nd = ed_net_devices.Get(node_id)->GetObject<LoraNetDevice>();
                     auto ble_net_addr = tarako_nodes[node_id].ble_network_addr;
                     auto lora_net_addr = lora_nd->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
                     node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
+                }
+                else 
+                {
+                    if (this_is_leader) 
+                    {
+                        node_data.current_status = tarako::TarakoNodeStatus::group_leader;
+                        // node_data.ble_net_device->GetPhy()->SetReceiverMode(true);
+                    }
+                    else 
+                    {
+                        node_data.current_status = tarako::TarakoNodeStatus::group_member;
+                    }
                 }
             }
         }
@@ -300,7 +336,14 @@ int main (int argc, char *argv[])
         uint index = itr->second.id - 1;
         device_energy_models.Get(index) -> TraceConnectWithoutContext(
             "TotalEnergyConsumption", 
-            MakeBoundCallback(&tarako::OnLoRaWANEnergyConsumptionChangeForGroup, &trace_node_data_map.at(itr->second.lora_network_addr))
+            MakeBoundCallback(
+                &tarako::OnLoRaWANEnergyConsumptionChangeForGroup, 
+                &trace_node_data_map.at(itr->second.lora_network_addr)
+            )
+        );
+        itr->second.ble_net_device->TraceConnectWithoutContext(
+            "MacPromiscRx", 
+            MakeCallback(&OnBleReceived)
         );
         Simulator::Schedule(
             itr->second.conn_interval, 
@@ -311,7 +354,7 @@ int main (int argc, char *argv[])
         NS_LOG_INFO(std::endl << std::fixed << itr->second.ToString());
     }
     // [INFO] Simulation
-    Time simulationTime = Hours(1);
+    Time simulationTime = Minutes(3);
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();

@@ -88,6 +88,8 @@ std::unordered_map<int, tarako::GarbageBoxSensor> trace_garbage_box_sensor_map;
 // LrWpan Callback
 static void DataIndication (tarako::TarakoNodeData* node_data , McpsDataIndicationParams params, Ptr<Packet> packet)
 {
+    std::ostringstream src_addr;
+    src_addr << params.m_srcAddr;
     switch (node_data->current_status)
     {
         case tarako::TarakoNodeStatus::group_leader:
@@ -96,6 +98,7 @@ static void DataIndication (tarako::TarakoNodeData* node_data , McpsDataIndicati
             int group_member_n = node_data->group_node_addrs.size();
             int buffered_packet_n = node_data->buffered_packets.size();
             std::vector<std::tuple<std::string, double>> node_energy_consumptions;
+            double total_energy_consumption;
             if (group_member_n == buffered_packet_n)
             {
                 tarako::TarakoGroupLeaderPayload gl_payload;
@@ -109,23 +112,49 @@ static void DataIndication (tarako::TarakoNodeData* node_data , McpsDataIndicati
                     tarako::TarakoGroupMemberPayload gm_payload;
                     memcpy(&gm_payload, data_sent_buffer, sizeof(gm_payload));
                     gl_payload.node_infos.push_back({sent_from, gm_payload.status});
-                    double total_energy_consumption = gm_payload.lora_energy_consumption;
+                    total_energy_consumption = gm_payload.lora_energy_consumption + (gm_payload.cnt_ble * 0.00005);
+                    node_energy_consumptions.push_back({sent_from, total_energy_consumption});
                 }
+                total_energy_consumption = node_data->lora_energy_consumption + (node_data->sent_packets_by_ble.size() * 0.00005);
+                node_energy_consumptions.push_back({src_addr.str(), total_energy_consumption});
                 Ptr<Packet> new_packet = Create<Packet>((uint8_t *)&gl_payload, sizeof(gl_payload));
+                // TODO: Garbage Box Sensor
                 node_data->lora_net_device->Send(new_packet);
                 node_data->sent_packets_by_lora.push_back(new_packet);
 
                 std::cout << "    ----  DataIndication.SendAggregatePayload()  ---- " <<  std::endl;
-                std::cout << "[INFO] (lora network addr) : " << node_data->lora_network_addr <<  std::endl;
-                std::cout << "[INFO] (data size) : " << gl_payload.node_infos.size() <<  std::endl;
+                std::cout << "(lora network addr) : " << node_data->lora_network_addr <<  std::endl;
+                std::cout << "(data size)         : " << gl_payload.node_infos.size() <<  std::endl;
                 std::cout << "    -------------------------------------------------    " <<  std::endl;
 
                 // Judge Next Leader
+                auto next_leader_id = tarako::TarakoUtil::GetNextGroupLeader(node_energy_consumptions);
+                if (next_leader_id != node_data->leader_node_addr) 
+                {
+                    tarako::TarakoGroupDownlink downlink = tarako::TarakoGroupDownlink{next_leader_id}; 
+                    for (auto& node: node_data->group_node_addrs)
+                    {
+                        Ptr<Packet> new_packet = Create<Packet>((uint8_t *)&downlink, sizeof(downlink));
+                        McpsDataRequestParams params;
+                        params.m_dstPanId    = 0;
+                        params.m_srcAddrMode = SHORT_ADDR;
+                        params.m_dstAddrMode = SHORT_ADDR;
+                        params.m_dstAddr     = Mac16Address (std::get<1>(node).c_str());
+                        node_data->lr_wpan_net_device->GetMac()->McpsDataRequest(params, new_packet);
+                        std::cout << "    ----  DataIndication.JudgeNextLeader()  ---- " <<  std::endl;
+                        std::cout << "(i am)        : " << node_data->ble_network_addr <<  std::endl;
+                        std::cout << "(next leader) : " <<  next_leader_id <<  std::endl;
+                        std::cout << "(notify to)   : " <<  std::get<1>(node).c_str() <<  std::endl;
+                        std::cout << "    -------------------------------------------------    " <<  std::endl;
+                    }
+                    // Update My Node Status -> Leader to Member
+                    node_data->current_status   = tarako::TarakoNodeStatus::group_member;
+                    node_data->leader_node_addr = next_leader_id;
+                }
+                break;
             }
             else
             {
-                std::ostringstream src_addr;
-                src_addr << params.m_srcAddr;
                 node_data->buffered_packets.push_back({src_addr.str(), packet});
 
                 Ptr<Packet> received_packet = packet->Copy ();
@@ -135,13 +164,35 @@ static void DataIndication (tarako::TarakoNodeData* node_data , McpsDataIndicati
                 memcpy(&received_gm_payload, received_packet_buffer, sizeof(received_gm_payload));
 
                 std::cout << "    ----  DataIndication.PushToBufferdPackets()  ---- " <<  std::endl;
-                std::cout << "[INFO] (payload.status) : " << received_gm_payload.status <<  std::endl;
-                std::cout << "[INFO] (sent from) : " << src_addr.str() <<  std::endl;
+                std::cout << "(i am)           : " << node_data->ble_network_addr <<  std::endl;
+                std::cout << "(payload.status) : " << received_gm_payload.status <<  std::endl;
+                std::cout << "(flow)           : " << params.m_srcAddr << " -> " << params.m_dstAddr <<  std::endl;
                 std::cout << "    -------------------------------------------------    " <<  std::endl;
+                break;
             }
         }
         case tarako::TarakoNodeStatus::group_member:
-        {}
+        {
+            Ptr<Packet> received_packet = packet->Copy ();
+            uint8_t *received_packet_buffer = new uint8_t[received_packet->GetSize()];
+            received_packet->CopyData(received_packet_buffer, received_packet->GetSize());
+            tarako::TarakoGroupDownlink received_group_leader;
+            memcpy(&received_group_leader, received_packet_buffer, sizeof(received_group_leader));
+            tarako::TarakoNodeStatus previous_status = node_data->current_status;
+            if (node_data->ble_network_addr == received_group_leader.next_leader_id)
+            {
+                node_data->current_status = tarako::TarakoNodeStatus::group_leader;
+            }
+            node_data->leader_node_addr = received_group_leader.next_leader_id;
+            std::cout << "    ----  DataIndication.ReceivedFromGL()  ---- " <<  std::endl;
+            std::cout << "(i am)            : " << node_data->ble_network_addr <<  std::endl;
+            std::cout << "(flow)            : " << params.m_srcAddr << " -> " << params.m_dstAddr <<  std::endl;
+            std::cout << "(next leader)     : " << received_group_leader.next_leader_id <<  std::endl;
+            std::cout << "(previous status) : " << previous_status <<  std::endl;
+            std::cout << "(current status)  : " << node_data->current_status <<  std::endl;
+            std::cout << "    --------------------------------------------    " <<  std::endl;
+            break;
+        }
         default:
         {}
     }
@@ -149,7 +200,9 @@ static void DataIndication (tarako::TarakoNodeData* node_data , McpsDataIndicati
 
 static void DataConfirm (McpsDataConfirmParams params)
 {
-  // NS_LOG_UNCOND ("LrWpanMcpsDataConfirmStatus = " << params.m_status);
+    // std::cout << "    ----  DataConfirm  ---- " <<  std::endl;
+    // std::cout << "(connection status)        : " << params.m_status <<  std::endl;
+    // std::cout << "    -------------------------------------------------    " <<  std::endl;
 }
 
 NS_LOG_COMPONENT_DEFINE ("HeterogeneousWirelessNetworkModel");
@@ -327,8 +380,15 @@ int main (int argc, char *argv[])
                 int node_id = std::get<0>(conn_info);
                 if (node_id == i)
                 {
-                    is_multiple_node = true;
-                    break;
+                    if (conn.size() <= 1)
+                    {
+                        break;
+                    }
+                    else 
+                    {
+                        is_multiple_node = true;
+                        break;
+                    }
                 }
             }
             if(is_multiple_node) break;
@@ -337,8 +397,8 @@ int main (int argc, char *argv[])
         // [Function] Register Role {Group Leader, Group Member}
         if (is_multiple_node) 
         {
-            NS_LOG_INFO("[INFO] (available_connections) size -> " << available_connections.size());
-            NS_LOG_INFO("[INFO] (target index) -> " << target_index);
+            NS_LOG_INFO("(available_connections) size  : " << available_connections.size());
+            NS_LOG_INFO("(target index)                : " << target_index);
             auto conn = available_connections.at(target_index);
             node_data.activate_time = Seconds(10 * target_index);
             for (auto& conn_info: conn)
@@ -363,12 +423,18 @@ int main (int argc, char *argv[])
                 }
             }
         }
-        // Push node_data to hash map
-        trace_node_data_map[node_data.lora_network_addr] = node_data;
+        else
+        {
+            node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
+        }
+        
         // [Init] Garbage Box Sensor
         tarako::GarbageBoxSensor garbage_box_sensor;
         garbage_box_sensor.current_volume = 0;
         trace_garbage_box_sensor_map[node_data.lora_network_addr] = garbage_box_sensor; 
+        // Push node_data to hash map
+        node_data.sensor = garbage_box_sensor;
+        trace_node_data_map[node_data.lora_network_addr] = node_data;
     }
     // --- [Declare] Trace --- //
     NS_LOG_INFO("[TRACE] tarako::OnPacketRecievedAtNetworkServer");
@@ -393,10 +459,9 @@ int main (int argc, char *argv[])
         Simulator::Schedule(
             itr->second.activate_time, 
             &tarako::OnActivateNodeForGroup, 
-            &trace_garbage_box_sensor_map.at(itr->second.lora_network_addr),
             &itr->second
         );
-        NS_LOG_INFO(std::endl << std::fixed << itr->second.ToString());
+        // NS_LOG_INFO(std::endl << std::fixed << itr->second.ToString());
     }
     // [Simulation]
     Time simulationTime = Minutes(60);
@@ -405,9 +470,9 @@ int main (int argc, char *argv[])
     Simulator::Destroy ();
     // --- Write Log ---
     const std::string log_path = "./scratch/heterogeneous_wireless/"; 
-    for (auto itr = trace_node_data_map.begin(); itr != trace_node_data_map.end(); ++itr)
-    {
-        std::cout << itr->second.ToString() << std::endl;
-    }
+    // for (auto itr = trace_node_data_map.begin(); itr != trace_node_data_map.end(); ++itr)
+    // {
+    //     std::cout << itr->second.ToString() << std::endl;
+    // }
     return 0;
 }

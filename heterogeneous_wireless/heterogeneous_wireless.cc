@@ -48,10 +48,8 @@
 using namespace ns3;
 using namespace lorawan;
 
-NS_LOG_COMPONENT_DEFINE ("HeterogeneousWirelessNetworkModel");
 // --- Global Object --- //
 tarako::TarakoLogger tarako_logger;
-tarako::TarakoUtil tarako_util;
 // --- LoRaWAN Gateway, LoRaWAN & BLE End Device --- //
 MobilityHelper mobility_gw, mobility_ed;
 Ptr<ListPositionAllocator> ed_allocator = CreateObject<ListPositionAllocator> ();
@@ -75,154 +73,19 @@ ForwarderHelper forwarderHelper;
 
 BleHelper ble_helper;
 LrWpanHelper lr_wpan_helper;
-Ptr<SingleModelSpectrumChannel> lr_wpan_channel = CreateObject<SingleModelSpectrumChannel> ();
 // --- Global Const Variable --- //
-const std::string GARBAGE_BOX_MAP_FILE = "/home/vagrant/workspace/tozastation/ns-3.30/scratch/test.csv";
-const int LORAWAN_GATEWAY_NUM = 3;
-const int LORAWAN_NETWORK_SERVER_NUM = 1;
-const double BLE_RX_POWER = 0.003;
-const double BLE_TX_POWER = 0.003;
+const std::string GARBAGE_BOX_MAP_FILE = "/home/vagrant/workspace/tozastation/ns-3.30/scratch/test_copy.csv";
+const int LORAWAN_GATEWAY_NUM          = 3;
+const int LORAWAN_NETWORK_SERVER_NUM   = 1;
+const double BLE_RX_POWER              = 0.003;
+const double BLE_TX_POWER              = 0.003;
 // --- Global Variable --- //
 int cnt_node = 0;
 std::vector<std::vector<std::tuple<int, bool>>> available_connections;
 std::vector<tarako::TarakoNodeData> tarako_nodes;
 std::unordered_map<int, tarako::TarakoNodeData> trace_node_data_map;
-std::unordered_map<int, tarako::GarbageBoxSensor> trace_garbage_box_sensor_map;
 
-// LrWpan Callback
-static void DataIndication (tarako::TarakoNodeData* node_data , McpsDataIndicationParams params, Ptr<Packet> packet)
-{
-    std::ostringstream src_addr;
-    src_addr << params.m_srcAddr;
-    switch (node_data->current_status)
-    {
-        case tarako::TarakoNodeStatus::group_leader:
-        {
-            // [Function] Send by LoRaWAN
-            int group_member_n = node_data->group_node_addrs.size();
-            int buffered_packet_n = node_data->buffered_packets.size();
-            std::vector<std::tuple<std::string, double>> node_energy_consumptions;
-            double total_energy_consumption;
-            if (group_member_n == buffered_packet_n)
-            {
-                tarako::TarakoGroupLeaderPayload gl_payload;
-                for (auto& bp: node_data->buffered_packets)
-                {
-                    std::string sent_from = std::get<0>(bp);
-                    Ptr<Packet> data_sent = std::get<1>(bp);
-
-                    uint8_t *data_sent_buffer = new uint8_t[data_sent->GetSize()];
-                    data_sent->CopyData(data_sent_buffer, data_sent->GetSize());
-                    tarako::TarakoGroupMemberPayload gm_payload;
-                    memcpy(&gm_payload, data_sent_buffer, sizeof(gm_payload));
-                    gl_payload.node_infos.push_back({sent_from, gm_payload.status});
-                    total_energy_consumption = gm_payload.lora_energy_consumption + (gm_payload.cnt_ble * 0.00005);
-                    node_energy_consumptions.push_back({sent_from, total_energy_consumption});
-                }
-                total_energy_consumption = node_data->lora_energy_consumption + (node_data->sent_packets_by_ble.size() * 0.00005);
-                node_energy_consumptions.push_back({src_addr.str(), total_energy_consumption});
-                // TODO: Garbage Box Sensor
-                unsigned int random_value = tarako::TarakoUtil::CreateRandomInt(
-                    tarako::TarakoConst::RANDOM_VALUE_RANGE_BEGIN,
-                    tarako::TarakoConst::RANDOM_VALUE_RANGE_END
-                );
-                // std::cout << "[INFO] add random value to garbage box: " << random_value << std::endl;
-                tarako::GarbageBoxStatus status =  tarako::TarakoUtil::GetGarbageBoxStatus(
-                    &node_data->sensor, 
-                    random_value,
-                    tarako::TarakoConst::GARBAGE_BOX_VOLUME
-                );
-                gl_payload.node_infos.push_back({node_data->ble_network_addr, status});
-                Ptr<Packet> new_packet = Create<Packet>((uint8_t *)&gl_payload, sizeof(gl_payload));
-                node_data->lora_net_device->Send(new_packet);
-                node_data->sent_packets_by_lora.push_back(new_packet);
-
-                NS_LOG_INFO("----  DataIndication.SendAggregatePayload()  ----");
-                NS_LOG_INFO("(lora network addr) : " << node_data->lora_network_addr);
-                NS_LOG_INFO("(data rate)         : " << node_data->lora_net_device->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDataRate());
-                NS_LOG_INFO("(data size)         : " << sizeof(gl_payload));
-                NS_LOG_INFO("-------------------------------------------------");
-
-                // Judge Next Leader
-                auto next_leader_id = tarako::TarakoUtil::GetNextGroupLeader(node_energy_consumptions);
-                if (next_leader_id != node_data->leader_node_addr) 
-                {
-                    tarako::TarakoGroupDownlink downlink = tarako::TarakoGroupDownlink{next_leader_id}; 
-                    for (auto& node: node_data->group_node_addrs)
-                    {
-                        Ptr<Packet> new_packet = Create<Packet>((uint8_t *)&downlink, sizeof(downlink));
-                        McpsDataRequestParams params;
-                        params.m_dstPanId    = 0;
-                        params.m_srcAddrMode = SHORT_ADDR;
-                        params.m_dstAddrMode = SHORT_ADDR;
-                        params.m_dstAddr     = Mac16Address (std::get<1>(node).c_str());
-                        node_data->lr_wpan_net_device->GetMac()->McpsDataRequest(params, new_packet);
-                        NS_LOG_INFO("----  DataIndication.JudgeNextLeader()  ----");
-                        NS_LOG_INFO("(i am)        : " << node_data->ble_network_addr);
-                        NS_LOG_INFO("(next leader) : " <<  next_leader_id);
-                        NS_LOG_INFO("(notify to)   : " <<  std::get<1>(node).c_str());
-                        NS_LOG_INFO("--------------------------------------------");
-                    }
-                    // Update My Node Status -> Leader to Member
-                    node_data->current_status   = tarako::TarakoNodeStatus::group_member;
-                    node_data->leader_node_addr = next_leader_id;
-                }
-                node_data->received_packets_by_ble.push_back(packet);
-                break;
-            }
-            else
-            {
-                node_data->buffered_packets.push_back({src_addr.str(), packet});
-
-                Ptr<Packet> received_packet = packet->Copy ();
-                uint8_t *received_packet_buffer = new uint8_t[received_packet->GetSize()];
-                received_packet->CopyData(received_packet_buffer, received_packet->GetSize());
-                tarako::TarakoGroupMemberPayload received_gm_payload;
-                memcpy(&received_gm_payload, received_packet_buffer, sizeof(received_gm_payload));
-
-                NS_LOG_INFO("----  DataIndication.PushToBufferdPackets()  ----");
-                NS_LOG_INFO("(i am)           : " << node_data->ble_network_addr);
-                NS_LOG_INFO("(payload.status) : " << received_gm_payload.status);
-                NS_LOG_INFO("(flow)           : " << params.m_srcAddr << " -> " << params.m_dstAddr);
-                NS_LOG_INFO("-------------------------------------------------");
-                node_data->received_packets_by_ble.push_back(packet);
-                break;
-            }
-        }
-        case tarako::TarakoNodeStatus::group_member:
-        {
-            Ptr<Packet> received_packet = packet->Copy ();
-            uint8_t *received_packet_buffer = new uint8_t[received_packet->GetSize()];
-            received_packet->CopyData(received_packet_buffer, received_packet->GetSize());
-            tarako::TarakoGroupDownlink received_group_leader;
-            memcpy(&received_group_leader, received_packet_buffer, sizeof(received_group_leader));
-            tarako::TarakoNodeStatus previous_status = node_data->current_status;
-            if (node_data->ble_network_addr == received_group_leader.next_leader_id)
-            {
-                node_data->current_status = tarako::TarakoNodeStatus::group_leader;
-            }
-            node_data->leader_node_addr = received_group_leader.next_leader_id;
-            NS_LOG_INFO("----  DataIndication.ReceivedFromGL()  ----");
-            NS_LOG_INFO("(i am)            : " << node_data->ble_network_addr);
-            NS_LOG_INFO("(flow)            : " << params.m_srcAddr << " -> " << params.m_dstAddr);
-            NS_LOG_INFO("(next leader)     : " << received_group_leader.next_leader_id);
-            NS_LOG_INFO("(previous status) : " << previous_status);
-            NS_LOG_INFO("(current status)  : " << node_data->current_status);
-            NS_LOG_INFO("--------------------------------------------");
-            node_data->received_packets_by_ble.push_back(packet);
-            break;
-        }
-        default:
-        {}
-    }
-}
-
-static void DataConfirm (McpsDataConfirmParams params)
-{
-    // std::cout << "    ----  DataConfirm  ---- " <<  std::endl;
-    // std::cout << "(connection status)        : " << params.m_status <<  std::endl;
-    // std::cout << "    -------------------------------------------------    " <<  std::endl;
-}
+NS_LOG_COMPONENT_DEFINE ("HeterogeneousWirelessNetworkModel");
 
 int main (int argc, char *argv[])
 {
@@ -236,11 +99,12 @@ int main (int argc, char *argv[])
     Config::SetDefault ("ns3::EndDeviceLorawanMac::DRControl", BooleanValue (true));
     PacketMetadata::Enable();
     // lr_wpan_helper.EnableLogComponents();
-    // [CSV READ] Garbage Box
+    // [CSV READ] Garbageå Box
     const auto garbage_boxes = tarako::TarakoUtil::GetGarbageBox(GARBAGE_BOX_MAP_FILE);  
     // [ADD] garbage boxes geolocation in allocator 
     for (const auto& g_box: garbage_boxes) {
         std::vector<std::tuple<int, bool>> available_connection;
+        //std::cout << g_box.burnable << "," << g_box.incombustible << "," << g_box.resource << std::endl;
         if (g_box.burnable) {
             ns3::Vector3D pos = Vector (g_box.latitude, g_box.longitude,1);
             ed_allocator->Add (pos);
@@ -347,99 +211,99 @@ int main (int argc, char *argv[])
     forwarderHelper.Install (gateways);
 
     // --- [INIT] BLE Setting --- //
-    if (tarako::TarakoConst::EnableGrouping) 
+    ble_net_devices = ble_helper.Install(end_devices);
+    // Set Adresses
+    NS_LOG_INFO("[INFO] Set BLE Device Address");
+    for (uint32_t i = 0; i < end_devices.GetN(); i++)
     {
-        NS_LOG_INFO("(EnableGrouping) : true");
-        ble_net_devices = ble_helper.Install(end_devices);
-        for (uint32_t i = 0; i < end_devices.GetN(); i++)
-        {
-            std::stringstream stream;
-            stream << std::hex << i+1;
-            std::string s( stream.str());
-            while (s.size() < 4)
-                s.insert(0,1,'0');
-            s.insert(2,1,':');
-            char const * buffer = s.c_str();
-            tarako_nodes[i].ble_network_addr = buffer;
-        }
-        // Setter Lr-Wpan Channel
-        Ptr<LogDistancePropagationLossModel> lr_wpan_prop_model = CreateObject<LogDistancePropagationLossModel> ();
-        Ptr<ConstantSpeedPropagationDelayModel> lr_wpan_delay_model = CreateObject<ConstantSpeedPropagationDelayModel> ();
-        lr_wpan_channel->AddPropagationLossModel (lr_wpan_prop_model);
-        lr_wpan_channel->SetPropagationDelayModel (lr_wpan_delay_model); 
+      std::stringstream stream;
+      stream << std::hex << i+1;
+      std::string s( stream.str());
+      while (s.size() < 4)
+        s.insert(0,1,'0');
+      s.insert(2,1,':');
+      char const * buffer = s.c_str();
+      tarako_nodes[i].ble_network_addr = buffer;
     }
+    // [Declare] Channel
+    Ptr<SingleModelSpectrumChannel> lr_wpan_channel = CreateObject<SingleModelSpectrumChannel> ();
+    Ptr<LogDistancePropagationLossModel> lr_wpan_prop_model = CreateObject<LogDistancePropagationLossModel> ();
+    Ptr<ConstantSpeedPropagationDelayModel> lr_wpan_delay_model = CreateObject<ConstantSpeedPropagationDelayModel> ();
+    lr_wpan_channel->AddPropagationLossModel (lr_wpan_prop_model);
+    lr_wpan_channel->SetPropagationDelayModel (lr_wpan_delay_model); 
 
     // --- [INIT] trace_node_data_map && trace_garbage_box_sensor_map --- //
     NS_LOG_INFO("[INIT] init trace_node_data_map && trace_garbage_box_sensor_map");
     for (int i=0; i < (int)ed_net_devices.GetN(); i++) {
         // [Init] object initial value {TarakoNodeData}
-        tarako::TarakoNodeData node_data = tarako_nodes[i];
-        node_data.conn_interval = Minutes(10);
-        node_data.total_energy_consumption = 0;
-        node_data.lora_energy_consumption = 0;
-        node_data.ble_energy_consumption = 0;
-        // Common Setup
+        tarako::TarakoNodeData node_data     = tarako_nodes[i];
+        node_data.conn_interval              = Minutes(10);
+        node_data.total_energy_consumption   = 0;
+        node_data.lora_energy_consumption    = 0;
+        node_data.ble_energy_consumption     = 0;
         // [Install] net devices {LoraNetDevice, LrWpanNetDevice}
         // --- Setup LoraNetDevice ---
-        node_data.lora_net_device = ed_net_devices.Get(i)->GetObject<LoraNetDevice>();
+        node_data.lora_net_device   = ed_net_devices.Get(i)->GetObject<LoraNetDevice>();
         node_data.lora_network_addr = node_data.lora_net_device->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+        // --- Setup LrWpanNetDevice ---
+        Ptr<LrWpanNetDevice> lr_wpan_net_device = CreateObject<LrWpanNetDevice> ();
+        lr_wpan_net_device->SetAddress(Mac16Address(tarako_nodes[i].ble_network_addr.c_str()));
+        lr_wpan_net_device->SetChannel(lr_wpan_channel);
+        end_devices.Get(i)->AddDevice(lr_wpan_net_device);
+        node_data.lr_wpan_net_device = lr_wpan_net_device;
+        node_data.lr_wpan_net_device->GetMac()->SetMcpsDataConfirmCallback(MakeCallback(&tarako::DataConfirm));
         // [Function] Judge it is multiple nodes and target node vector index
         auto result_is_multiple_node = tarako::TarakoUtil::IsMultipleNode(available_connections, i);
-        bool is_multiple_node = std::get<0>(result_is_multiple_node);
-        int target_index = std::get<1>(result_is_multiple_node);
-        if (tarako::TarakoConst::EnableGrouping)
+        bool is_multiple_node        = std::get<0>(result_is_multiple_node);
+        int target_index             = std::get<1>(result_is_multiple_node);
+        // [Function] Register Role {Group Leader, Group Member}
+        if (is_multiple_node && tarako::TarakoConst::EnableGrouping) 
         {
-            // --- Setup LrWpanNetDevice ---
-            Ptr<LrWpanNetDevice> lr_wpan_net_device = CreateObject<LrWpanNetDevice> ();
-            lr_wpan_net_device->SetAddress(Mac16Address(tarako_nodes[i].ble_network_addr.c_str()));
-            lr_wpan_net_device->SetChannel(lr_wpan_channel);
-            end_devices.Get(i)->AddDevice(lr_wpan_net_device);
-            node_data.lr_wpan_net_device = lr_wpan_net_device;
-            node_data.lr_wpan_net_device->GetMac()->SetMcpsDataConfirmCallback(MakeCallback(&DataConfirm));
-            if (is_multiple_node) 
-            {  
-                NS_LOG_INFO("(available_connections) size  : " << available_connections.size());
-                NS_LOG_INFO("(target index)                : " << target_index);
-                auto conn = available_connections.at(target_index);
-                node_data.activate_time = Seconds(tarako::TarakoConst::ACTIVATION_INTERVAL * target_index);
-                for (auto& conn_info: conn)
+            NS_LOG_INFO("(available_connections) size  : " << available_connections.size());
+            NS_LOG_INFO("(target index)                : " << target_index);
+            auto conn = available_connections.at(target_index);
+            for (auto& conn_info: conn)
+            {
+                int node_id         = std::get<0>(conn_info);
+                bool this_is_leader = std::get<1>(conn_info);
+                if (this_is_leader) node_data.leader_node_addr = tarako_nodes[node_id].ble_network_addr;
+                // [Function] Register nodes {lora net addr, ble net addr} without me
+                int me = i;
+                if (node_id != me)
                 {
-                    int node_id = std::get<0>(conn_info);
-                    bool this_is_leader = std::get<1>(conn_info);
-                    if (this_is_leader) node_data.leader_node_addr = tarako_nodes[node_id].ble_network_addr;
-                    // [Function] Register nodes {lora net addr, ble net addr} without me
-                    int me = i;
-                    if (node_id != me)
+                    auto lora_nd        = ed_net_devices.Get(node_id)->GetObject<LoraNetDevice>();
+                    auto ble_net_addr   = tarako_nodes[node_id].ble_network_addr;
+                    auto lora_net_addr  = lora_nd->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+                    node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
+                }
+                else 
+                {
+                    // [Function] Judge Am I Which Nodes
+                    if (this_is_leader)
                     {
-                        auto lora_nd = ed_net_devices.Get(node_id)->GetObject<LoraNetDevice>();
-                        auto ble_net_addr = tarako_nodes[node_id].ble_network_addr;
-                        auto lora_net_addr = lora_nd->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
-                        node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
+                        node_data.current_status = tarako::TarakoNodeStatus::group_leader;
+                        node_data.activate_time  = Seconds(10 * (target_index + 1));
                     }
-                    else 
+                    else
                     {
-                        // [Function] Judge Am I Which Nodes
-                        if (this_is_leader) node_data.current_status = tarako::TarakoNodeStatus::group_leader;
-                        else  node_data.current_status = tarako::TarakoNodeStatus::group_member;
+                        node_data.current_status = tarako::TarakoNodeStatus::group_member;
+                        node_data.activate_time  = Seconds(12 * (target_index + 1));
                     }
                 }
             }
-            // [Function] Register Role {Group Leader, Group Member}
-            else node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
+        }
+        else if (is_multiple_node)
+        {
+            node_data.activate_time  = Seconds(10 * (target_index + 1));
+            node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
         }
         else
         {
-            if (is_multiple_node) 
-            {  
-                auto conn = available_connections.at(target_index);
-                node_data.activate_time = Seconds(tarako::TarakoConst::ACTIVATION_INTERVAL * target_index);
-            }
             node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
         }
         // [Init] Garbage Box Sensor
         tarako::GarbageBoxSensor garbage_box_sensor;
         garbage_box_sensor.current_volume = 0;
-        trace_garbage_box_sensor_map[node_data.lora_network_addr] = garbage_box_sensor; 
         // Push node_data to hash map
         node_data.sensor = garbage_box_sensor;
         trace_node_data_map[node_data.lora_network_addr] = node_data;
@@ -451,9 +315,9 @@ int main (int argc, char *argv[])
         "ReceivedPacket", 
         MakeBoundCallback(&tarako::OnPacketRecievedAtNetworkServerForGroup, &trace_node_data_map)
     );
+    NS_LOG_INFO("[TRACE] tarako::OnLoRaWANEnergyConsumptionChange");
     for (auto itr = trace_node_data_map.begin(); itr != trace_node_data_map.end(); ++itr)
     {
-        // --- Energy Consumption --- //
         uint index = itr->second.id;
         device_energy_models.Get(index) -> TraceConnectWithoutContext(
             "TotalEnergyConsumption", 
@@ -462,10 +326,9 @@ int main (int argc, char *argv[])
                 &trace_node_data_map.at(itr->second.lora_network_addr)
             )
         );
-        if (tarako::TarakoConst::EnableGrouping)
-        {
-            itr->second.lr_wpan_net_device->GetMac()->SetMcpsDataIndicationCallback(MakeBoundCallback(&DataIndication, &itr->second));
-        }
+        itr->second.lr_wpan_net_device->GetMac()->SetMcpsDataIndicationCallback(
+            MakeBoundCallback(&tarako::DataIndication, &itr->second)
+        );
         Simulator::Schedule(
             itr->second.activate_time, 
             &tarako::OnActivateNodeForGroup, 
@@ -473,12 +336,17 @@ int main (int argc, char *argv[])
         );
     }
     // [Simulation]
-    Time simulationTime = Hours(tarako::TarakoConst::SIMURATION_TIME);
+    Time simulationTime = Hours(24);
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();
     // --- Write Log --- //
-    const std::string log_file_path = "./scratch/heterogeneous_wireless/log.csv"; 
+    std::string file_prefix    = tarako::TarakoUtil::GetCurrentTimeStamp();
+    std::string base_file_name = "";
+    if (tarako::TarakoConst::EnableGrouping) base_file_name = "_group_log.csv";
+    else base_file_name   = "_lorawan_log.csv";
+    std::string file_name = file_prefix + base_file_name;
+    const std::string log_file_path = "./scratch/heterogeneous_wireless/" + file_name; 
     AsciiTraceHelper ascii;
     Ptr<OutputStreamWrapper> log_stream = ascii.CreateFileStream(log_file_path); 
     // Write Header

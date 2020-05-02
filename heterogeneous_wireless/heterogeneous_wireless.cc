@@ -58,21 +58,22 @@ NodeContainer end_devices, gateways, network_servers;
 ApplicationContainer lora_network_apps;
 NetDeviceContainer ble_net_devices;
 
-Ptr<LogDistancePropagationLossModel> loss = CreateObject<LogDistancePropagationLossModel> ();
-Ptr<UniformRandomVariable> x = CreateObject<UniformRandomVariable> ();
+Ptr<LogDistancePropagationLossModel> loss  = CreateObject<LogDistancePropagationLossModel> ();
+Ptr<UniformRandomVariable> x               = CreateObject<UniformRandomVariable> ();
 Ptr<RandomPropagationLossModel> randomLoss = CreateObject<RandomPropagationLossModel> ();
-Ptr<PropagationDelayModel> delay = CreateObject<ConstantSpeedPropagationDelayModel> ();
+Ptr<PropagationDelayModel> delay           = CreateObject<ConstantSpeedPropagationDelayModel> ();
 
-LoraPhyHelper lora_phy_helper = LoraPhyHelper ();
-LorawanMacHelper lora_mac_helper = LorawanMacHelper ();
-LoraHelper lora_helper = LoraHelper ();
+LoraPhyHelper lora_phy_helper       = LoraPhyHelper ();
+LorawanMacHelper lora_mac_helper    = LorawanMacHelper ();
+LoraHelper lora_helper              = LoraHelper ();
+
 BasicEnergySourceHelper basic_src_helper;
 LoraRadioEnergyModelHelper radio_energy_helper;
 NetworkServerHelper network_server_helper;
 ForwarderHelper forwarderHelper;
-
 BleHelper ble_helper;
 LrWpanHelper lr_wpan_helper;
+
 // --- Global Const Variable --- //
 const std::string GARBAGE_BOX_MAP_FILE = "/home/vagrant/workspace/tozastation/ns-3.30/scratch/test_copy.csv";
 const int LORAWAN_GATEWAY_NUM          = 3;
@@ -97,9 +98,12 @@ int main (int argc, char *argv[])
     LogComponentEnableAll (LOG_PREFIX_TIME);
     // --- Set the EDs to require Data Rate control from the NS --- //
     Config::SetDefault ("ns3::EndDeviceLorawanMac::DRControl", BooleanValue (true));
-    PacketMetadata::Enable();
+    //PacketMetadata::Enable();
+    // Packet::EnablePrinting ();
+    // Packet::EnableChecking ();
     // lr_wpan_helper.EnableLogComponents();
-    // [CSV READ] Garbageå Box
+    // lr_wpan_helper.EnablePcapAll (std::string ("lr-wpan-data"), true);
+    // [CSV READ] Garbage Box
     const auto garbage_boxes = tarako::TarakoUtil::GetGarbageBox(GARBAGE_BOX_MAP_FILE);  
     // [ADD] garbage boxes geolocation in allocator 
     for (const auto& g_box: garbage_boxes) {
@@ -117,7 +121,7 @@ int main (int argc, char *argv[])
             cnt_node++;
         }
         if (g_box.incombustible) {
-            ns3::Vector3D pos = Vector (g_box.latitude + 0.000001, g_box.longitude,1);
+            ns3::Vector3D pos = Vector (g_box.latitude + 0.003, g_box.longitude,1);
             ed_allocator->Add(pos);
 
             tarako::TarakoNodeData node;
@@ -128,7 +132,7 @@ int main (int argc, char *argv[])
             cnt_node++;
         }
         if (g_box.resource) {
-            ns3::Vector3D pos = Vector (g_box.latitude + 0.000002, g_box.longitude,1);
+            ns3::Vector3D pos = Vector (g_box.latitude - 0.003, g_box.longitude,1);
             ed_allocator->Add(pos);
 
             tarako::TarakoNodeData node;
@@ -153,12 +157,11 @@ int main (int argc, char *argv[])
     
     // [INIT] LoRaWAN Gateway
     gateways.Create (LORAWAN_GATEWAY_NUM);
+    //gateways.Create (1);
     mobility_gw.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
-    gw_allocator->Add (Vector (34.969392, 136.924615, 15.0));
-    gw_allocator->Add (Vector (34.953981, 136.962864, 15.0));
-    gw_allocator->Add (Vector (34.973183, 136.967018, 15.0));
-    mobility_gw.SetPositionAllocator (gw_allocator);
-    mobility_gw.Install (gateways);
+    gw_allocator->Add (Vector (34.969587, 136.924443, 15.0)); // 東浦町立卯ノ里小学校
+    gw_allocator->Add (Vector (34.953981, 136.962864, 15.0)); // 愛知県立東浦高
+    gw_allocator->Add (Vector (34.984811, 136.962978, 15.0)); // 東浦町立北部中学校
     mobility_gw.SetPositionAllocator (gw_allocator);
     mobility_gw.Install (gateways);
 
@@ -175,7 +178,7 @@ int main (int argc, char *argv[])
     lora_phy_helper.SetChannel (channel);
     lora_helper.EnablePacketTracking();
     // --- Install Helper to EndDevices ---
-    uint8_t nwk_id = 54;
+    uint8_t nwk_id    = 54;
     uint32_t nwk_addr = 1864;
     Ptr<LoraDeviceAddressGenerator> addr_gen = CreateObject<LoraDeviceAddressGenerator> (nwk_id,nwk_addr);
     lora_phy_helper.SetDeviceType (LoraPhyHelper::ED);
@@ -197,7 +200,7 @@ int main (int argc, char *argv[])
     radio_energy_helper.Set ("SleepCurrentA", DoubleValue (0.0000015));
     radio_energy_helper.Set ("RxCurrentA", DoubleValue (0.0112));
     radio_energy_helper.SetTxCurrentModel ("ns3::ConstantLoraTxCurrentModel","TxCurrent", DoubleValue (0.028));
-    EnergySourceContainer lora_energy_sources = basic_src_helper.Install (end_devices);
+    EnergySourceContainer lora_energy_sources       = basic_src_helper.Install (end_devices);
     Names::Add ("/Names/EnergySource", lora_energy_sources.Get (0));
     DeviceEnergyModelContainer device_energy_models = radio_energy_helper.Install(ed_net_devices, lora_energy_sources);
     // [INIT] LoRaWAN Network Server
@@ -226,8 +229,8 @@ int main (int argc, char *argv[])
       tarako_nodes[i].ble_network_addr = buffer;
     }
     // [Declare] Channel
-    Ptr<SingleModelSpectrumChannel> lr_wpan_channel = CreateObject<SingleModelSpectrumChannel> ();
-    Ptr<LogDistancePropagationLossModel> lr_wpan_prop_model = CreateObject<LogDistancePropagationLossModel> ();
+    Ptr<SingleModelSpectrumChannel>         lr_wpan_channel     = CreateObject<SingleModelSpectrumChannel> ();
+    Ptr<LogDistancePropagationLossModel>    lr_wpan_prop_model  = CreateObject<LogDistancePropagationLossModel> ();
     Ptr<ConstantSpeedPropagationDelayModel> lr_wpan_delay_model = CreateObject<ConstantSpeedPropagationDelayModel> ();
     lr_wpan_channel->AddPropagationLossModel (lr_wpan_prop_model);
     lr_wpan_channel->SetPropagationDelayModel (lr_wpan_delay_model); 
@@ -251,7 +254,9 @@ int main (int argc, char *argv[])
         lr_wpan_net_device->SetChannel(lr_wpan_channel);
         end_devices.Get(i)->AddDevice(lr_wpan_net_device);
         node_data.lr_wpan_net_device = lr_wpan_net_device;
-        node_data.lr_wpan_net_device->GetMac()->SetMcpsDataConfirmCallback(MakeCallback(&tarako::DataConfirm));
+        node_data.lr_wpan_net_device->GetMac()->SetMcpsDataConfirmCallback(
+            MakeCallback(&tarako::DataConfirm)
+        );
         // [Function] Judge it is multiple nodes and target node vector index
         auto result_is_multiple_node = tarako::TarakoUtil::IsMultipleNode(available_connections, i);
         bool is_multiple_node        = std::get<0>(result_is_multiple_node);
@@ -287,7 +292,7 @@ int main (int argc, char *argv[])
                     else
                     {
                         node_data.current_status = tarako::TarakoNodeStatus::group_member;
-                        node_data.activate_time  = Seconds(12 * (target_index + 1));
+                        node_data.activate_time  = Seconds(12 * (target_index + 1) + node_id);
                     }
                 }
             }
@@ -299,6 +304,7 @@ int main (int argc, char *argv[])
         }
         else
         {
+            node_data.activate_time  = Seconds(10 * (target_index + 1));
             node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
         }
         // [Init] Garbage Box Sensor
@@ -336,16 +342,16 @@ int main (int argc, char *argv[])
         );
     }
     // [Simulation]
-    Time simulationTime = Hours(24);
+    Time simulationTime = Hours(2);
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();
     // --- Write Log --- //
-    std::string file_prefix    = tarako::TarakoUtil::GetCurrentTimeStamp();
-    std::string base_file_name = "";
+    std::string file_prefix         = tarako::TarakoUtil::GetCurrentTimeStamp();
+    std::string base_file_name      = "";
     if (tarako::TarakoConst::EnableGrouping) base_file_name = "_group_log.csv";
-    else base_file_name   = "_lorawan_log.csv";
-    std::string file_name = file_prefix + base_file_name;
+    else base_file_name             = "_lorawan_log.csv";
+    std::string file_name           = file_prefix + base_file_name;
     const std::string log_file_path = "./scratch/heterogeneous_wireless/" + file_name; 
     AsciiTraceHelper ascii;
     Ptr<OutputStreamWrapper> log_stream = ascii.CreateFileStream(log_file_path); 

@@ -82,7 +82,6 @@ const double BLE_RX_POWER              = 0.003;
 const double BLE_TX_POWER              = 0.003;
 // --- Global Variable --- //
 int cnt_node = 0;
-std::vector<std::vector<std::tuple<int, bool>>> available_connections;
 std::vector<tarako::TarakoNodeData> tarako_nodes;
 std::unordered_map<int, tarako::TarakoNodeData> trace_node_data_map;
 
@@ -104,20 +103,20 @@ int main (int argc, char *argv[])
     // lr_wpan_helper.EnableLogComponents();
     // lr_wpan_helper.EnablePcapAll (std::string ("lr-wpan-data"), true);
     // [CSV READ] Garbage Box
+    const std::string GARBAGE_BOX_PAIR_FILE = "/home/vagrant/workspace/tozastation/ns-3.30/scratch/grouping.csv";
     const auto garbage_boxes = tarako::TarakoUtil::GetGarbageBox(GARBAGE_BOX_MAP_FILE);  
     // [ADD] garbage boxes geolocation in allocator 
-    for (const auto& g_box: garbage_boxes) {
-        std::vector<std::tuple<int, bool>> available_connection;
-        //std::cout << g_box.burnable << "," << g_box.incombustible << "," << g_box.resource << std::endl;
+    std::vector<std::string> skip_ids;
+    for (auto g_box: garbage_boxes) {
         if (g_box.burnable) {
             ns3::Vector3D pos = Vector (g_box.latitude, g_box.longitude,1);
             ed_allocator->Add (pos);
             
             tarako::TarakoNodeData node;
-            node.id = cnt_node;
-            node.position = pos;
+            node.id        = cnt_node;
+            node.position  = pos;
+            node.belong_to = g_box.id;
             tarako_nodes.push_back(node);
-            available_connection.push_back({cnt_node, false});
             cnt_node++;
         }
         if (g_box.incombustible) {
@@ -125,10 +124,10 @@ int main (int argc, char *argv[])
             ed_allocator->Add(pos);
 
             tarako::TarakoNodeData node;
-            node.id = cnt_node;
-            node.position = pos;
+            node.id        = cnt_node;
+            node.position  = pos;
+            node.belong_to = g_box.id;
             tarako_nodes.push_back(node);
-            available_connection.push_back({cnt_node, false});
             cnt_node++;
         }
         if (g_box.resource) {
@@ -136,19 +135,14 @@ int main (int argc, char *argv[])
             ed_allocator->Add(pos);
 
             tarako::TarakoNodeData node;
-            node.id = cnt_node;
-            node.position = pos;
+            node.id        = cnt_node;
+            node.position  = pos;
+            node.belong_to = g_box.id;
             tarako_nodes.push_back(node);
-            available_connection.push_back({cnt_node, false});
             cnt_node++;
         }
-        // select leader node
-        int available_cnt = available_connection.size();
-        int leader_node = tarako::TarakoUtil::CreateRandomInt(0, available_cnt-1);
-        std::get<1>(available_connection.at(leader_node)) = true;
-        // add connection
-        available_connections.push_back(available_connection);
     }
+
     // [INIT] End Devices (LoRaWAN, BLE)
     end_devices.Create(cnt_node);
     mobility_ed.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
@@ -237,9 +231,11 @@ int main (int argc, char *argv[])
 
     // --- [INIT] trace_node_data_map && trace_garbage_box_sensor_map --- //
     NS_LOG_INFO("[INIT] init trace_node_data_map && trace_garbage_box_sensor_map");
+    //const auto pairs = tarako::TarakoUtil::GetPairGarbageBox(GARBAGE_BOX_PAIR_FILE);
     for (int i=0; i < (int)ed_net_devices.GetN(); i++) {
         // [Init] object initial value {TarakoNodeData}
         tarako::TarakoNodeData node_data     = tarako_nodes[i];
+        node_data.activate_time              = Minutes(1);
         node_data.conn_interval              = Minutes(10);
         node_data.total_energy_consumption   = 0;
         node_data.lora_energy_consumption    = 0;
@@ -258,54 +254,68 @@ int main (int argc, char *argv[])
             MakeCallback(&tarako::DataConfirm)
         );
         // [Function] Judge it is multiple nodes and target node vector index
-        auto result_is_multiple_node = tarako::TarakoUtil::IsMultipleNode(available_connections, i);
-        bool is_multiple_node        = std::get<0>(result_is_multiple_node);
-        int target_index             = std::get<1>(result_is_multiple_node);
         // [Function] Register Role {Group Leader, Group Member}
-        if (is_multiple_node && tarako::TarakoConst::EnableGrouping) 
-        {
-            NS_LOG_INFO("(available_connections) size  : " << available_connections.size());
-            NS_LOG_INFO("(target index)                : " << target_index);
-            auto conn = available_connections.at(target_index);
-            for (auto& conn_info: conn)
-            {
-                int node_id         = std::get<0>(conn_info);
-                bool this_is_leader = std::get<1>(conn_info);
-                if (this_is_leader) node_data.leader_node_addr = tarako_nodes[node_id].ble_network_addr;
-                // [Function] Register nodes {lora net addr, ble net addr} without me
-                int me = i;
-                if (node_id != me)
-                {
-                    auto lora_nd        = ed_net_devices.Get(node_id)->GetObject<LoraNetDevice>();
-                    auto ble_net_addr   = tarako_nodes[node_id].ble_network_addr;
-                    auto lora_net_addr  = lora_nd->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
-                    node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
-                }
-                else 
-                {
-                    // [Function] Judge Am I Which Nodes
-                    if (this_is_leader)
-                    {
-                        node_data.current_status = tarako::TarakoNodeStatus::group_leader;
-                        node_data.activate_time  = Seconds(10 * (target_index + 1));
+        // 1. Get Pair Group Name && tarako::TarakoConst::EnableGrouping == true
+        const int my_id               = node_data.id;
+        const std::string my_organize = node_data.belong_to;
+        if(tarako::TarakoConst::EnableGrouping && tarako::TarakoConst::EnablePairingGroup) {
+            bool is_adding_node = false;
+            const std::vector<std::string> pair_organizes = tarako::TarakoUtil::GetPairGarbageBox(GARBAGE_BOX_PAIR_FILE, node_data.belong_to);
+            for (auto t_node = tarako_nodes.begin(); t_node != tarako_nodes.end(); t_node++) {
+                // Regist Group Node: (belong to only) or (pair group) 
+                if (t_node->id != my_id) {
+                    if (t_node->belong_to == my_organize) {
+                        is_adding_node = true;
+                    } else {
+                        for (auto org: pair_organizes) {
+                            if (t_node->belong_to.find(org) == 0) {
+                                //std::cout << t_node->belong_to << ","<< org << std::endl;
+                                is_adding_node = true;
+                                break;
+                            }
+                        }
                     }
-                    else
-                    {
-                        node_data.current_status = tarako::TarakoNodeStatus::group_member;
-                        node_data.activate_time  = Seconds(12 * (target_index + 1) + node_id);
+                }
+                if(is_adding_node) {
+                    auto lora_net_addr = ed_net_devices.Get(t_node->id)->GetObject<LoraNetDevice>()->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+                    auto ble_net_addr  = tarako_nodes[t_node->id].ble_network_addr;
+                    node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
+                    is_adding_node = false;
+                }
+            }
+            if(!node_data.group_node_addrs.empty()) {
+                node_data.leader_node_addr = tarako::TarakoUtil::GetFirstLeader(node_data.group_node_addrs,node_data.lora_network_addr, node_data.ble_network_addr);
+                std::cout << node_data.ble_network_addr << "," << node_data.leader_node_addr << std::endl;
+                if (node_data.ble_network_addr.compare(node_data.leader_node_addr) == 0) {
+                    //std::cout << "i am leader" << std::endl;
+                    node_data.current_status = tarako::TarakoNodeStatus::group_leader;
+                } else {
+                    node_data.current_status = tarako::TarakoNodeStatus::group_member;
+                }
+            } else {
+                node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
+            }
+            // Check Has many node on your garbage box: (single) or (multiple)
+        } else if (tarako::TarakoConst::EnableGrouping) {
+             for (auto t_node = tarako_nodes.begin(); t_node != tarako_nodes.end(); t_node++) {
+                if (t_node->id != my_id) {
+                    if (t_node->belong_to == my_organize) {
+                        auto lora_net_addr = ed_net_devices.Get(t_node->id)->GetObject<LoraNetDevice>()->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+                        auto ble_net_addr  = tarako_nodes[t_node->id].ble_network_addr;
+                        node_data.group_node_addrs.push_back({lora_net_addr,ble_net_addr});
                     }
                 }
             }
-        }
-        else if (is_multiple_node)
-        {
-            node_data.activate_time  = Seconds(10 * (target_index + 1));
-            node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
-        }
-        else
-        {
-            node_data.activate_time  = Seconds(10 * (target_index + 1));
-            node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
+            if(!node_data.group_node_addrs.empty()) {
+                node_data.leader_node_addr = tarako::TarakoUtil::GetFirstLeader(node_data.group_node_addrs,node_data.lora_network_addr, node_data.ble_network_addr);
+                if (node_data.belong_to == node_data.leader_node_addr) {
+                    node_data.current_status = tarako::TarakoNodeStatus::group_leader;
+                } else {
+                    node_data.current_status = tarako::TarakoNodeStatus::group_member;
+                }
+            } else {
+                node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
+            }
         }
         // [Init] Garbage Box Sensor
         tarako::GarbageBoxSensor garbage_box_sensor;

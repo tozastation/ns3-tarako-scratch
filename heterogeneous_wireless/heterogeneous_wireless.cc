@@ -87,18 +87,27 @@ std::unordered_map<int, tarako::TarakoNodeData> trace_node_data_map;
 
 NS_LOG_COMPONENT_DEFINE ("HeterogeneousWirelessNetworkModel");
 
+static void OnLoRaWANGWReceivedPacket(Ptr<const Packet> packet, const Address& address)
+{
+    std::cout << "received" << std::endl;
+}
+
+
 int main (int argc, char *argv[])
 {
     // --- Logging --- //
-    LogComponentEnable ("HeterogeneousWirelessNetworkModel", LOG_LEVEL_ALL);
-    LogComponentEnable ("TarakoTracer", LOG_LEVEL_ALL);
+    // LogComponentEnable ("HeterogeneousWirelessNetworkModel", LOG_LEVEL_ALL);
+    // LogComponentEnable ("TarakoTracer", LOG_LEVEL_ALL);
+    // LogComponentEnable ("GatewayLorawanMac", LOG_LEVEL_ALL);
+    // LogComponentEnable ("EndDeviceLorawanMac", LOG_LEVEL_ALL);
+    // LogComponentEnable("NetworkServer", LOG_LEVEL_ALL);
+    // LogComponentEnable ("ClassAEndDeviceLorawanMac", LOG_LEVEL_ALL);
     LogComponentEnableAll (LOG_PREFIX_FUNC);
     LogComponentEnableAll (LOG_PREFIX_NODE);
     LogComponentEnableAll (LOG_PREFIX_TIME);
     // --- Set the EDs to require Data Rate control from the NS --- //
     Config::SetDefault ("ns3::EndDeviceLorawanMac::DRControl", BooleanValue (true));
-    //PacketMetadata::Enable();
-    // Packet::EnablePrinting ();
+    // PacketMetadata::Enable();
     // Packet::EnableChecking ();
     // lr_wpan_helper.EnableLogComponents();
     // lr_wpan_helper.EnablePcapAll (std::string ("lr-wpan-data"), true);
@@ -150,11 +159,11 @@ int main (int argc, char *argv[])
     mobility_ed.Install (end_devices);
     
     // [INIT] LoRaWAN Gateway
-    gateways.Create (LORAWAN_GATEWAY_NUM);
-    //gateways.Create (1);
+    //gateways.Create (LORAWAN_GATEWAY_NUM);
+    gateways.Create (1);
     mobility_gw.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
-    gw_allocator->Add (Vector (34.969587, 136.924443, 15.0)); // 東浦町立卯ノ里小学校
-    gw_allocator->Add (Vector (34.953981, 136.962864, 15.0)); // 愛知県立東浦高
+    //gw_allocator->Add (Vector (34.969587, 136.924443, 15.0)); // 東浦町立卯ノ里小学校
+    //gw_allocator->Add (Vector (34.953981, 136.962864, 15.0)); // 愛知県立東浦高
     gw_allocator->Add (Vector (34.984811, 136.962978, 15.0)); // 東浦町立北部中学校
     mobility_gw.SetPositionAllocator (gw_allocator);
     mobility_gw.Install (gateways);
@@ -163,10 +172,10 @@ int main (int argc, char *argv[])
     // -- Channel --- //
     loss->SetPathLossExponent (3.76);
     loss->SetReference (1, 7.7);
-    x->SetAttribute ("Min", DoubleValue (0.0));
-    x->SetAttribute ("Max", DoubleValue (10));
-    randomLoss->SetAttribute ("Variable", PointerValue (x));
-    loss->SetNext (randomLoss);
+    // x->SetAttribute ("Min", DoubleValue (0.0));
+    // x->SetAttribute ("Max", DoubleValue (10));
+    // randomLoss->SetAttribute ("Variable", PointerValue (x));
+    // loss->SetNext (randomLoss);
     Ptr<LoraChannel> channel = CreateObject<LoraChannel> (loss, delay);
     // --- Helper --- //
     lora_phy_helper.SetChannel (channel);
@@ -197,6 +206,10 @@ int main (int argc, char *argv[])
     EnergySourceContainer lora_energy_sources       = basic_src_helper.Install (end_devices);
     Names::Add ("/Names/EnergySource", lora_energy_sources.Get (0));
     DeviceEnergyModelContainer device_energy_models = radio_energy_helper.Install(ed_net_devices, lora_energy_sources);
+
+    FileHelper fileHelper;
+    fileHelper.ConfigureFile ("battery-level", FileAggregator::SPACE_SEPARATED);
+    fileHelper.WriteProbe ("ns3::DoubleProbe", "/Names/EnergySource/RemainingEnergy", "Output");
     // [INIT] LoRaWAN Network Server
     network_servers.Create (LORAWAN_NETWORK_SERVER_NUM);
     network_server_helper.SetGateways (gateways);
@@ -225,6 +238,7 @@ int main (int argc, char *argv[])
     // [Declare] Channel
     Ptr<SingleModelSpectrumChannel>         lr_wpan_channel     = CreateObject<SingleModelSpectrumChannel> ();
     Ptr<LogDistancePropagationLossModel>    lr_wpan_prop_model  = CreateObject<LogDistancePropagationLossModel> ();
+    //lr_wpan_prop_model->SetReference(3000, 0);
     Ptr<ConstantSpeedPropagationDelayModel> lr_wpan_delay_model = CreateObject<ConstantSpeedPropagationDelayModel> ();
     lr_wpan_channel->AddPropagationLossModel (lr_wpan_prop_model);
     lr_wpan_channel->SetPropagationDelayModel (lr_wpan_delay_model); 
@@ -244,6 +258,7 @@ int main (int argc, char *argv[])
         // --- Setup LoraNetDevice ---
         node_data.lora_net_device   = ed_net_devices.Get(i)->GetObject<LoraNetDevice>();
         node_data.lora_network_addr = node_data.lora_net_device->GetMac()->GetObject<EndDeviceLorawanMac>()->GetDeviceAddress().GetNwkAddr();
+        node_data.lora_net_device->GetMac()->GetObject<EndDeviceLorawanMac>()->SetDataRate(5);
         // --- Setup LrWpanNetDevice ---
         Ptr<LrWpanNetDevice> lr_wpan_net_device = CreateObject<LrWpanNetDevice> ();
         lr_wpan_net_device->SetAddress(Mac16Address(tarako_nodes[i].ble_network_addr.c_str()));
@@ -308,7 +323,7 @@ int main (int argc, char *argv[])
             }
             if(!node_data.group_node_addrs.empty()) {
                 node_data.leader_node_addr = tarako::TarakoUtil::GetFirstLeader(node_data.group_node_addrs,node_data.lora_network_addr, node_data.ble_network_addr);
-                if (node_data.belong_to == node_data.leader_node_addr) {
+                if (node_data.ble_network_addr.compare(node_data.leader_node_addr) == 0) {
                     node_data.current_status = tarako::TarakoNodeStatus::group_leader;
                 } else {
                     node_data.current_status = tarako::TarakoNodeStatus::group_member;
@@ -316,6 +331,8 @@ int main (int argc, char *argv[])
             } else {
                 node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
             }
+        } else {
+            node_data.current_status = tarako::TarakoNodeStatus::only_lorawan;
         }
         // [Init] Garbage Box Sensor
         tarako::GarbageBoxSensor garbage_box_sensor;
@@ -331,6 +348,8 @@ int main (int argc, char *argv[])
         "ReceivedPacket", 
         MakeBoundCallback(&tarako::OnPacketRecievedAtNetworkServerForGroup, &trace_node_data_map)
     );
+    auto cb = MakeCallback(&OnLoRaWANGWReceivedPacket);
+    ns->SetStartTime(Seconds(0));
     NS_LOG_INFO("[TRACE] tarako::OnLoRaWANEnergyConsumptionChange");
     for (auto itr = trace_node_data_map.begin(); itr != trace_node_data_map.end(); ++itr)
     {
@@ -352,22 +371,27 @@ int main (int argc, char *argv[])
         );
     }
     // [Simulation]
-    Time simulationTime = Hours(2);
+    Time simulationTime = Hours(4);
     Simulator::Stop (simulationTime);
     Simulator::Run ();
     Simulator::Destroy ();
     // --- Write Log --- //
     std::string file_prefix         = tarako::TarakoUtil::GetCurrentTimeStamp();
     std::string base_file_name      = "";
-    if (tarako::TarakoConst::EnableGrouping) base_file_name = "_group_log.csv";
+    if (tarako::TarakoConst::EnableGrouping && tarako::TarakoConst::EnableEqualization) base_file_name = "_group_with_eq_log.csv";
+    else if (tarako::TarakoConst::EnableGrouping) base_file_name = "_group_without_eq_log.csv";
     else base_file_name             = "_lorawan_log.csv";
     std::string file_name           = file_prefix + base_file_name;
     const std::string log_file_path = "./scratch/heterogeneous_wireless/" + file_name; 
     AsciiTraceHelper ascii;
     Ptr<OutputStreamWrapper> log_stream = ascii.CreateFileStream(log_file_path); 
+    // EC_LOG
+    std::string ec_log_file_name = "./scratch/heterogeneous_wireless/" + file_prefix +  "_ec_log.csv";
+    Ptr<OutputStreamWrapper> ec_stream = ascii.CreateFileStream(ec_log_file_name); 
     // Write Header
     *log_stream->GetStream() << "id,";
     *log_stream->GetStream() << "pos_x,pos_y,pos_z,";
+    *log_stream->GetStream() << "lora_network_addr,ble_network_addr,";
     *log_stream->GetStream() << "activation_time,connection_interval,";
     *log_stream->GetStream() << "total_energy_consumption,lora_energy_consumption,ble_energy_consumption";
     *log_stream->GetStream() << std::endl;
@@ -380,12 +404,14 @@ int main (int argc, char *argv[])
         *log_stream->GetStream() << itr->second.position.x << ",";
         *log_stream->GetStream() << itr->second.position.y << ",";
         *log_stream->GetStream() << itr->second.position.z << ",";
+        *log_stream->GetStream() << itr->second.lora_network_addr << ",";
+        *log_stream->GetStream() << itr->second.ble_network_addr << ",";
         *log_stream->GetStream() << std::fixed << itr->second.activate_time.GetSeconds() << ",";
         *log_stream->GetStream() << std::fixed << itr->second.conn_interval.GetSeconds() << ",";
         if (tarako::TarakoConst::EnableGrouping)
         {
-            ble_rx = itr->second.received_packets_by_ble.size() * BLE_RX_POWER;
-            ble_tx = itr->second.sent_packets_by_ble.size() * BLE_TX_POWER;
+            ble_rx = itr->second.received_packets_by_ble.size() * 0.0006;
+            ble_tx = itr->second.sent_packets_by_ble.size() * 0.0006;
             itr->second.ble_energy_consumption = ble_tx + ble_rx;
         }
         lora_all = itr->second.lora_energy_consumption;
@@ -394,7 +420,23 @@ int main (int argc, char *argv[])
         *log_stream->GetStream() << itr->second.total_energy_consumption << ",";
         *log_stream->GetStream() << itr->second.lora_energy_consumption << ",";
         *log_stream->GetStream() << itr->second.ble_energy_consumption << std::endl;
-        std::cout << itr->second.ToString() << std::endl;
+        //std::cout << itr->second.ToString() << std::endl;
+        for(auto ec: itr->second.stack_lora_ec) {
+            *ec_stream->GetStream() << std::fixed << itr->second.id << "," << ec << std::endl;
+        }
+    }
+    if (tarako::TarakoConst::EnableGrouping) {
+        std::string base_file_name           = "_group_pair.csv";
+        std::string pair_file_name           = file_prefix + base_file_name;
+        const std::string pair_file_path     = "./scratch/heterogeneous_wireless/" + pair_file_name; 
+        Ptr<OutputStreamWrapper> pair_stream = ascii.CreateFileStream(pair_file_path); 
+        for (auto itr = trace_node_data_map.begin(); itr != trace_node_data_map.end(); ++itr) {
+            for (auto pair: itr->second.group_node_addrs) {
+                *pair_stream->GetStream() << itr->second.id    << ",";
+                *pair_stream->GetStream() << itr->second.lora_network_addr << ",";
+                *pair_stream->GetStream() << std::get<0>(pair) << std::endl;
+            }
+        }
     }
     return 0;
 }
